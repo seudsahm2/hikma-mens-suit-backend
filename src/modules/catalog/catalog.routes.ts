@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { ah, notFound } from '../../lib/http';
+import { imageUrls } from '../../lib/storage';
 import { validate } from '../../middleware/validate';
 import { productInclude, serializeCategory, serializeProduct, serializeProductCard } from './serialize';
 
@@ -33,12 +34,24 @@ const listQuery = z.object({
 catalogRouter.get(
   '/categories',
   ah(async (_req, res) => {
-    const categories = await prisma.category.findMany({
-      orderBy: { sortOrder: 'asc' },
-      include: { _count: { select: { products: { where: { status: 'ACTIVE' } } } } },
-    });
+    const [categories, covers] = await Promise.all([
+      prisma.category.findMany({
+        orderBy: { sortOrder: 'asc' },
+        include: { _count: { select: { products: { where: { status: 'ACTIVE' } } } } },
+      }),
+      // Fallback tile image: the newest (featured first) product photo in each category
+      prisma.product.findMany({
+        where: { status: 'ACTIVE', images: { some: {} } },
+        distinct: ['categoryId'],
+        orderBy: [{ isFeatured: 'desc' }, { createdAt: 'desc' }],
+        select: { categoryId: true, images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { key: true } } },
+      }),
+    ]);
+    const coverOf = new Map(covers.map((c) => [c.categoryId, c.images[0] ? imageUrls(c.images[0].key).md : null]));
     res.set('Cache-Control', 'public, max-age=60');
-    res.json({ categories: categories.map(serializeCategory) });
+    res.json({
+      categories: categories.map((c) => ({ ...serializeCategory(c), imageUrl: c.imageUrl ?? coverOf.get(c.id) ?? null })),
+    });
   }),
 );
 
