@@ -53,6 +53,11 @@ export function createApp() {
     app.use('/uploads', express.static(LOCAL_UPLOAD_DIR, { maxAge: '30d', immutable: true }));
   }
 
+  // Root: a short status so opening the API address in a browser isn't a confusing 404
+  app.get('/', (_req, res) => {
+    res.json({ service: 'Hikma Men’s Fashion API', status: 'running', health: '/api/health', shop: env.clientUrl });
+  });
+
   app.get('/api/health', async (_req, res) => {
     try {
       await prisma.$queryRaw`SELECT 1`;
