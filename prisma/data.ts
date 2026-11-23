@@ -53,6 +53,8 @@ export const categories: {
   },
   { slug: 'knitwear', nameEn: 'Knitwear', nameAm: 'ሹራብ', kind: 'APPAREL', sizes: ['S', 'M', 'L', 'XL', 'XXL'] },
   { slug: 'jackets', nameEn: 'Jackets', nameAm: 'ጃኬት', kind: 'APPAREL', sizes: ['S', 'M', 'L', 'XL', 'XXL', '3XL'] },
+  { slug: 'sets', nameEn: 'Sets & Tracksuits', nameAm: 'ሙሉ ልብስ እና ትራክሱት', kind: 'APPAREL', sizes: ['S', 'M', 'L', 'XL', 'XXL', '3XL'] },
+  { slug: 'jelabiya', nameEn: 'Jelabiya & Kaftan', nameAm: 'ጀለቢያ', kind: 'APPAREL', sizes: ['S', 'M', 'L', 'XL', 'XXL', '3XL'] },
   {
     slug: 'jeans',
     nameEn: 'Jeans & Trousers',
