@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: hikma-api
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci --include=dev && npm run build && npx prisma migrate deploy
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: API_URL
+        sync: false # https://hikma-api.onrender.com
+      - key: CLIENT_URL
+        sync: false # https://<frontend domain>
+      - key: DATABASE_URL
+        sync: false # Supabase pooled URL (port 6543, ?pgbouncer=true&connection_limit=1)
+      - key: DIRECT_URL
+        sync: false # Supabase direct/session URL (port 5432)
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: products
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        value: hikmafashionbot
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+      - key: TELEGRAM_MINIAPP_SHORT_NAME
+        value: shop
+      - key: SHEGERPAY_API_KEY
+        sync: false
