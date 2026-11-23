@@ -261,7 +261,7 @@ async function main() {
     process.exit(1);
   }
 
-  const stats = { created: 0, active: 0, skipped: 0, notProduct: 0, noCaption: 0 };
+  const stats = { created: 0, active: 0, activated: 0, repaired: 0, skipped: 0, notProduct: 0, noCaption: 0 };
   const byCategory = new Map<string, number>();
 
   for (const post of posts) {
@@ -286,17 +286,49 @@ async function main() {
       parsed.name = parsed.name.slice(parsed.brand.length).trim();
     }
     const importRef = `tg-${post.id}`;
-    if (await prisma.product.findUnique({ where: { importRef } })) {
-      stats.skipped++;
-      continue;
-    }
-
     const category = categories.get(parsed.categorySlug) ?? categories.get('shirts')!;
     const postDate = new Date(post.date);
     const activate = parsed.price !== null && (activateAll || (activateSince !== null && postDate >= activateSince));
-    byCategory.set(category.slug, (byCategory.get(category.slug) ?? 0) + 1);
     const line = `#${post.id} ${post.date.slice(0, 10)} · ${parsed.name} · ${parsed.price ?? '?'} ETB · ${category.slug} · ${post.photos.length} photo(s)${activate ? ' · ON SALE' : ''}`;
 
+    const existing = await withRetry(() =>
+      prisma.product.findUnique({ where: { importRef }, include: { _count: { select: { images: true } }, variants: true } }),
+    );
+    if (existing) {
+      // An earlier run was interrupted while saving this product's photos: rebuild it
+      if (existing._count.images === 0 && post.photos.length > 0 && existing.tags.includes('imported')) {
+        if (dryRun) {
+          console.log(`  ↻ ${line} (rebuild: no photos)`);
+          stats.repaired++;
+          continue;
+        }
+        await withRetry(() => prisma.product.delete({ where: { id: existing.id } }));
+        stats.repaired++;
+      } else if (activate && existing.status === 'DRAFT' && existing.tags.includes('imported')) {
+        // Imported earlier as a draft and untouched since: put it on sale now
+        const untouched = existing.variants.every((v) => v.stock === 0);
+        if (!untouched) {
+          stats.skipped++;
+          continue;
+        }
+        if (!dryRun) {
+          await withRetry(() =>
+            prisma.$transaction([
+              prisma.productVariant.updateMany({ where: { productId: existing.id, stock: 0 }, data: { stock } }),
+              prisma.product.update({ where: { id: existing.id }, data: { status: 'ACTIVE' } }),
+            ]),
+          );
+        }
+        stats.activated++;
+        console.log(`  ↑ ${line} (now on sale)`);
+        continue;
+      } else {
+        stats.skipped++;
+        continue;
+      }
+    }
+
+    byCategory.set(category.slug, (byCategory.get(category.slug) ?? 0) + 1);
     if (dryRun) {
       console.log(`  ${line}`);
       stats.created++;
@@ -304,58 +336,83 @@ async function main() {
       continue;
     }
 
-    const brand = parsed.brand
-      ? await prisma.brand.upsert({ where: { slug: slugify(parsed.brand) }, create: { slug: slugify(parsed.brand), name: parsed.brand }, update: {} })
-      : null;
-    // Sizes: from the caption if listed, else the category's common sizes
-    const sizes = parsed.sizes.length ? parsed.sizes : category.sizes.length ? category.sizes.slice(1, Math.min(category.sizes.length - 1, 6)) : [''];
-
-    const product = await prisma.product.create({
-      data: {
-        slug: `${slugify(parsed.name) || 'item'}-${randomSuffix(5)}`,
-        importRef,
-        nameEn: parsed.name,
-        categoryId: category.id,
-        brandId: brand?.id,
-        origin: parsed.origin,
-        basePrice: parsed.price ?? 0,
-        status: activate ? 'ACTIVE' : 'DRAFT',
-        isNewArrival: postDate > new Date(Date.now() - 60 * 86400_000),
-        tags: ['imported'],
-        createdAt: postDate,
-        variants: {
-          create: sizes.map((size, i) => ({
-            sku: `TG${post.id}-${i}-${randomSuffix(3).toUpperCase()}`,
-            size,
-            stock: activate ? stock : 0,
-          })),
-        },
-      },
-    });
-
-    let order = 0;
+    // 1) Upload photos first. 2) Create the product, variants and image rows in ONE database call,
+    // so a dropped connection can never leave a half-created product behind.
+    const images: { key: string; width: number | null; height: number | null; sortOrder: number; alt: string }[] = [];
     for (const rel of post.photos.slice(0, 10)) {
       const file = path.join(exportDir, rel);
       if (!existsSync(file)) {
         console.warn(`    ! missing photo ${rel}`);
         continue;
       }
-      const saved = await saveImage(await readFile(file), 'products');
-      await prisma.productImage.create({
-        data: { productId: product.id, key: saved.key, width: saved.width, height: saved.height, sortOrder: order++, alt: parsed.name },
-      });
+      const buffer = await readFile(file);
+      const saved = await withRetry(() => saveImage(buffer, 'products'));
+      images.push({ key: saved.key, width: saved.width, height: saved.height, sortOrder: images.length, alt: parsed.name });
     }
+
+    const brand = parsed.brand
+      ? await withRetry(() =>
+          prisma.brand.upsert({ where: { slug: slugify(parsed.brand!) }, create: { slug: slugify(parsed.brand!), name: parsed.brand! }, update: {} }),
+        )
+      : null;
+    // Sizes: from the caption if listed, else the category's common sizes
+    const sizes = parsed.sizes.length ? parsed.sizes : category.sizes.length ? category.sizes.slice(1, Math.min(category.sizes.length - 1, 6)) : [''];
+
+    await withRetry(() =>
+      prisma.product.create({
+        data: {
+          slug: `${slugify(parsed.name) || 'item'}-${randomSuffix(5)}`,
+          importRef,
+          nameEn: parsed.name,
+          categoryId: category.id,
+          brandId: brand?.id,
+          origin: parsed.origin,
+          basePrice: parsed.price ?? 0,
+          status: activate ? 'ACTIVE' : 'DRAFT',
+          isNewArrival: postDate > new Date(Date.now() - 60 * 86400_000),
+          tags: ['imported'],
+          createdAt: postDate,
+          images: { create: images },
+          variants: {
+            create: sizes.map((size, i) => ({
+              sku: `TG${post.id}-${i}-${randomSuffix(3).toUpperCase()}`,
+              size,
+              stock: activate ? stock : 0,
+            })),
+          },
+        },
+      }),
+    );
     stats.created++;
     if (activate) stats.active++;
     console.log(`  + ${line}`);
   }
 
   console.log(
-    `\n✓ ${dryRun ? 'Would import' : 'Imported'} ${stats.created} products (${stats.active} on sale, ${stats.created - stats.active} drafts)` +
-      `\n  skipped: ${stats.skipped} already imported · ${stats.notProduct} greetings/announcements · ${stats.noCaption} photos without text` +
-      `\n  by category: ${[...byCategory].map(([k, v]) => `${k} ${v}`).join(', ')}`,
+    `\n✓ ${dryRun ? 'DRY RUN — nothing was changed. Would import' : 'Imported'} ${stats.created} new products (${stats.active} on sale, ${stats.created - stats.active} drafts)` +
+      `\n  ${stats.activated} earlier drafts put on sale · ${stats.repaired} rebuilt (missing photos) · ${stats.skipped} already imported` +
+      `\n  ${stats.notProduct} greetings/announcements skipped · ${stats.noCaption} photos without text` +
+      (byCategory.size ? `\n  new by category: ${[...byCategory].map(([k, v]) => `${k} ${v}`).join(', ')}` : ''),
   );
   await prisma.$disconnect();
+}
+
+/** Retries temporary network/database errors (dropped pooler connections, timeouts) with backoff. */
+async function withRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const e = err as { code?: string; message?: string };
+      const transient =
+        ['P1001', 'P1002', 'P1008', 'P1017', 'P2024'].includes(e.code ?? '') ||
+        /ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket|fetch failed|Can't reach database/i.test(e.message ?? '');
+      if (!transient || i >= attempts) throw err;
+      const wait = 2000 * 2 ** (i - 1);
+      console.warn(`    … connection problem, retrying in ${wait / 1000}s (${i}/${attempts - 1})`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
 }
 
 if (require.main === module) {
