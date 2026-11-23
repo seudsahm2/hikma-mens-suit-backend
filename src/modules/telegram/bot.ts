@@ -4,6 +4,7 @@ import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { consumeLinkCode } from './linkCodes';
+import { confirmLoginToken } from '../auth/botLogin';
 
 /** The bot exists only when a token is configured; everything else degrades gracefully. */
 export const bot: Bot | null = env.TELEGRAM_BOT_TOKEN ? new Bot(env.TELEGRAM_BOT_TOKEN) : null;
@@ -38,8 +39,32 @@ if (bot) {
 
   bot.command('start', async (ctx) => {
     if (ctx.chat.type !== 'private') return;
-    const path = startParamToPath(ctx.match || undefined);
     const am = isAm(ctx);
+
+    // Website sign-in: /start login_<token>. ctx.from is Telegram's own verified sender info.
+    const payload = String(ctx.match ?? '');
+    if (payload.startsWith('login_') && ctx.from) {
+      const ok = confirmLoginToken(payload.slice(6), {
+        id: ctx.from.id,
+        firstName: ctx.from.first_name,
+        lastName: ctx.from.last_name,
+        username: ctx.from.username,
+        languageCode: ctx.from.language_code,
+      });
+      await ctx.reply(
+        ok
+          ? am
+            ? '✅ ገብተዋል። ወደ ድረ-ገጹ ይመለሱ።'
+            : '✅ You’re signed in. Go back to the website.'
+          : am
+            ? 'ይህ የመግቢያ ሊንክ ጊዜው አልፏል። በድረ-ገጹ ላይ እንደገና ይሞክሩ።'
+            : 'This sign-in link has expired. Please try again on the website.',
+        { reply_markup: new InlineKeyboard().url(am ? '🌐  ወደ ድረ-ገጹ' : '🌐  Back to the website', shopUrl('/')) },
+      );
+      return;
+    }
+
+    const path = startParamToPath(payload || undefined);
     await ctx.reply(am ? 'እንኳን ወደ Hikma Men’s Fashion በደህና መጡ።' : 'Welcome to Hikma Men’s Fashion.', {
       reply_markup: new InlineKeyboard().webApp(am ? '🛍  ሱቁን ይክፈቱ' : '🛍  Open the shop', shopUrl(path)),
     });

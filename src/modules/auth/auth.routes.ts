@@ -11,6 +11,7 @@ import { normalizeEthiopianPhone } from '../../lib/phone';
 import { requireAuth } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { verifyLoginWidget, verifyMiniAppInitData, type TelegramIdentity } from './telegramVerify';
+import { checkLoginToken, createLoginToken } from './botLogin';
 
 export const authRouter = Router();
 
@@ -90,6 +91,35 @@ authRouter.post(
     if (!identity) throw unauthorized('Telegram sign-in could not be verified');
     const user = await upsertTelegramCustomer(identity);
     res.json({ token: signToken({ sub: user.id, role: 'CUSTOMER' }), user: publicUser(user) });
+  }),
+);
+
+// Website: sign in through the bot (no phone number, no code)
+const pollLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
+
+authRouter.post(
+  '/telegram/bot-login',
+  authLimiter,
+  ah(async (_req, res) => {
+    requireBotToken();
+    const token = createLoginToken();
+    res.json({
+      token,
+      url: `https://t.me/${env.TELEGRAM_BOT_USERNAME}?start=login_${token}`,
+      expiresInSeconds: 300,
+    });
+  }),
+);
+
+authRouter.get(
+  '/telegram/bot-login/:token',
+  pollLimiter,
+  ah(async (req, res) => {
+    const state = checkLoginToken(String(req.params.token));
+    if (state.status === 'pending') return res.json({ status: 'pending' });
+    if (state.status === 'expired') return res.status(410).json({ status: 'expired' });
+    const user = await upsertTelegramCustomer(state.identity);
+    res.json({ status: 'confirmed', token: signToken({ sub: user.id, role: 'CUSTOMER' }), user: publicUser(user) });
   }),
 );
 
