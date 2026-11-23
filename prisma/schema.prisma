@@ -1,0 +1,331 @@
+// Hikma Men's Fashion — data model
+// Money is stored in whole Ethiopian birr (Int).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── People ──────────────────────────────────────────────
+
+enum Role {
+  CUSTOMER
+  ADMIN
+  OWNER
+}
+
+model User {
+  id               String   @id @default(cuid())
+  role             Role     @default(CUSTOMER)
+  fullName         String
+  phone            String?  @unique
+  // Customers sign in with Telegram
+  telegramId       BigInt?  @unique
+  telegramUsername String?
+  photoUrl         String?
+  languageCode     String   @default("en")
+  // Staff (OWNER / ADMIN) sign in with phone + password
+  passwordHash     String?
+  isActive         Boolean  @default(true)
+  // Address remembered for the next checkout
+  city             String?
+  area             String?
+  landmark         String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  orders      Order[]
+  orderEvents OrderEvent[]
+  stockMoves  StockMovement[]
+}
+
+// ─── Catalog ─────────────────────────────────────────────
+
+enum ProductKind {
+  APPAREL
+  FOOTWEAR
+  FRAGRANCE
+  ACCESSORY
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+model Category {
+  id        String      @id @default(cuid())
+  slug      String      @unique
+  nameEn    String
+  nameAm    String
+  kind      ProductKind
+  imageUrl  String?
+  // Size options offered in the admin editor, e.g. ["S","M","L","XL","XXL"]
+  sizes     String[]
+  // Size guide rows: [{ "size": "M", "chest": "96-101", ... }]
+  sizeGuide Json?
+  sortOrder Int         @default(0)
+  products  Product[]
+}
+
+model Brand {
+  id       String    @id @default(cuid())
+  slug     String    @unique
+  name     String
+  products Product[]
+}
+
+model Product {
+  id             String        @id @default(cuid())
+  slug           String        @unique
+  nameEn         String
+  nameAm         String?
+  descriptionEn  String?
+  descriptionAm  String?
+  categoryId     String
+  brandId        String?
+  origin         String?
+  material       String?
+  fit            String?
+  basePrice      Int
+  compareAtPrice Int?
+  costPrice      Int?
+  status         ProductStatus @default(DRAFT)
+  isFeatured     Boolean       @default(false)
+  isNewArrival   Boolean       @default(true)
+  badge          String?
+  tags           String[]
+  // Fragrance only
+  concentration  String?
+  volumeMl       Int?
+  scentFamily    String?
+  notesTop       String[]
+  notesHeart     String[]
+  notesBase      String[]
+  // Social
+  tikTokUrl       String?
+  telegramPostUrl String?
+  // Source post id when imported from the Telegram channel export
+  importRef       String?      @unique
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  category Category         @relation(fields: [categoryId], references: [id])
+  brand    Brand?           @relation(fields: [brandId], references: [id])
+  images   ProductImage[]
+  variants ProductVariant[]
+
+  @@index([status, categoryId])
+  @@index([createdAt])
+}
+
+model ProductImage {
+  id        String  @id @default(cuid())
+  productId String
+  // Base path in storage; sizes are stored as <key>-sm.webp / -md.webp / -lg.webp
+  key       String
+  width     Int?
+  height    Int?
+  alt       String?
+  color     String?
+  sortOrder Int     @default(0)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, sortOrder])
+}
+
+model ProductVariant {
+  id        String  @id @default(cuid())
+  productId String
+  sku       String  @unique
+  size      String  @default("")
+  color     String  @default("")
+  colorHex  String?
+  price     Int?
+  stock     Int     @default(0)
+  isActive  Boolean @default(true)
+
+  product    Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItems OrderItem[]
+  stockMoves StockMovement[]
+
+  @@unique([productId, size, color])
+}
+
+// ─── Orders ──────────────────────────────────────────────
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PACKING
+  OUT_FOR_DELIVERY
+  DELIVERED
+  PICKED_UP
+  CANCELLED
+}
+
+enum PaymentStatus {
+  UNPAID
+  SUBMITTED
+  PARTIAL
+  PAID
+  REJECTED
+}
+
+enum OrderSource {
+  WEB
+  MINI_APP
+  ADMIN
+}
+
+model Order {
+  id               String        @id @default(cuid())
+  orderNumber      String        @unique
+  userId           String?
+  source           OrderSource   @default(WEB)
+  customerName     String
+  customerPhone    String
+  telegramChatId   BigInt?
+  deliveryOptionId String
+  deliveryLabel    String
+  city             String?
+  area             String?
+  landmark         String?
+  lat              Float?
+  lng              Float?
+  subtotal         Int
+  deliveryFee      Int?
+  total            Int
+  costTotal        Int           @default(0)
+  // Amount the customer must pay now (full total, or the deposit)
+  amountDue        Int
+  amountPaid       Int           @default(0)
+  isDeposit        Boolean       @default(false)
+  paymentMethodId  String?
+  paymentLabel     String?
+  transactionRef   String?
+  paymentProofKey  String?
+  paymentStatus    PaymentStatus @default(UNPAID)
+  status           OrderStatus   @default(PENDING)
+  note             String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  user   User?        @relation(fields: [userId], references: [id])
+  items  OrderItem[]
+  events OrderEvent[]
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+}
+
+model OrderItem {
+  id          String  @id @default(cuid())
+  orderId     String
+  variantId   String
+  productId   String
+  productName String
+  size        String  @default("")
+  color       String  @default("")
+  imageKey    String?
+  unitPrice   Int
+  costPrice   Int     @default(0)
+  quantity    Int
+
+  order   Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id])
+}
+
+model OrderEvent {
+  id         String   @id @default(cuid())
+  orderId    String
+  type       String
+  message    String?
+  actorId    String?
+  createdAt  DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([orderId, createdAt])
+}
+
+enum StockReason {
+  ORDER
+  CANCEL
+  RESTOCK
+  ADJUST
+}
+
+model StockMovement {
+  id        String      @id @default(cuid())
+  variantId String
+  delta     Int
+  reason    StockReason
+  orderId   String?
+  actorId   String?
+  createdAt DateTime    @default(now())
+
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  actor   User?          @relation(fields: [actorId], references: [id])
+
+  @@index([variantId, createdAt])
+}
+
+// ─── Store configuration ─────────────────────────────────
+
+model PaymentMethod {
+  id            String  @id // telebirr, cbe, mpesa, ...
+  name          String
+  kind          String  // "wallet" | "bank"
+  accountName   String  @default("")
+  accountNumber String  @default("")
+  isEnabled     Boolean @default(false)
+  sortOrder     Int     @default(0)
+}
+
+model DeliveryOption {
+  id          String  @id // addis, regional, pickup
+  nameEn      String
+  nameAm      String
+  noteEn      String  @default("")
+  noteAm      String  @default("")
+  // null = fee is confirmed by phone
+  fee         Int?
+  needsAddress Boolean @default(true)
+  isEnabled   Boolean @default(true)
+  sortOrder   Int     @default(0)
+}
+
+model Settings {
+  id                   String   @id @default("default")
+  storeName            String   @default("Hikma Men's Fashion")
+  phone                String   @default("0955706969")
+  telegramInbox        String   @default("Hikm5506")
+  telegramChannelUrl   String   @default("")
+  tikTokHandle         String   @default("hikutiiiiiiii")
+  addressEn            String   @default("Betel, Yellow Building, opposite MK Building · Shop G2")
+  addressAm            String   @default("ቤተል ቢጫ ፎቅ፣ ፊትለፊት MK ህንፃ፣ ሱቅ ቁጥር G2")
+  mapLat               Float?
+  mapLng               Float?
+  openingHours         String   @default("Mon–Sun · 8:30 – 21:00")
+  announcementEn       String   @default("")
+  announcementAm       String   @default("")
+  heroVideoUrl         String?
+  heroImageUrl         String?
+  partialPaymentEnabled Boolean @default(true)
+  depositPercent       Int      @default(50)
+  returnPolicyEn       String   @default("")
+  returnPolicyAm       String   @default("")
+  // Telegram
+  channelChatId        String?
+  adminChatId          String?
+  updatedAt            DateTime @updatedAt
+}
