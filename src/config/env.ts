@@ -38,7 +38,9 @@ if (!parsed.success) {
 export const env = {
   ...parsed.data,
   isProd: parsed.data.NODE_ENV === 'production',
-  clientOrigins: parsed.data.CLIENT_URL.split(',').map((s) => s.trim()).filter(Boolean),
+  // Trailing slashes are stripped: browsers send the Origin header without one
+  clientOrigins: parsed.data.CLIENT_URL.split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean),
   /** First client origin; used when building links. */
-  clientUrl: parsed.data.CLIENT_URL.split(',')[0]!.trim(),
+  clientUrl: parsed.data.CLIENT_URL.split(',')[0]!.trim().replace(/\/+$/, ''),
+  apiUrl: parsed.data.API_URL.replace(/\/+$/, ''),
 };

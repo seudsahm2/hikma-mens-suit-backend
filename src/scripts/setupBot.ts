@@ -21,7 +21,7 @@ async function main() {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
   const me = await bot.api.getMe();
 
-  const url = `${env.API_URL}/api/telegram/webhook/${env.TELEGRAM_WEBHOOK_SECRET}`;
+  const url = `${env.apiUrl}/api/telegram/webhook/${env.TELEGRAM_WEBHOOK_SECRET}`;
   await bot.api.setWebhook(url, {
     secret_token: env.TELEGRAM_WEBHOOK_SECRET,
     allowed_updates: ['message', 'callback_query', 'channel_post'],

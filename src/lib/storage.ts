@@ -49,7 +49,7 @@ async function remove(objectPaths: string[]) {
 
 export function publicUrl(objectPath: string): string {
   if (supabase) return `${env.SUPABASE_URL}/storage/v1/object/public/${env.SUPABASE_BUCKET}/${objectPath}`;
-  return `${env.API_URL}/uploads/${objectPath}`;
+  return `${env.apiUrl}/uploads/${objectPath}`;
 }
 
 export function imageUrls(key: string): Record<ImageSize, string> {
