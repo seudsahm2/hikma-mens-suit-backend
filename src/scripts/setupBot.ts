@@ -21,6 +21,14 @@ async function main() {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
   const me = await bot.api.getMe();
 
+  // Safety: never reconfigure a different bot because of a pasted token from another project
+  if (me.username?.toLowerCase() !== env.TELEGRAM_BOT_USERNAME.toLowerCase()) {
+    throw new Error(
+      `TELEGRAM_BOT_TOKEN belongs to @${me.username}, but TELEGRAM_BOT_USERNAME is @${env.TELEGRAM_BOT_USERNAME}. ` +
+        'Nothing was changed. Put the token of the right bot (BotFather → /mybots → the bot → API Token).',
+    );
+  }
+
   const url = `${env.apiUrl}/api/telegram/webhook/${env.TELEGRAM_WEBHOOK_SECRET}`;
   await bot.api.setWebhook(url, {
     secret_token: env.TELEGRAM_WEBHOOK_SECRET,

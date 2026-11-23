@@ -17,6 +17,21 @@ const server = app.listen(env.PORT, () => {
 
 void startPollingIfEnabled();
 
+// Catch a token from another bot early: sign-in links and the Mini App would silently fail
+if (bot) {
+  bot.api.getMe().then(
+    (me) => {
+      if (me.username?.toLowerCase() !== env.TELEGRAM_BOT_USERNAME.toLowerCase()) {
+        logger.error(
+          { tokenBot: me.username, expected: env.TELEGRAM_BOT_USERNAME },
+          'TELEGRAM_BOT_TOKEN belongs to a different bot than TELEGRAM_BOT_USERNAME — Telegram sign-in will not work',
+        );
+      }
+    },
+    (err) => logger.warn({ err: (err as Error).message }, 'could not reach Telegram to verify the bot token'),
+  );
+}
+
 // Release stock held by orders that were never paid (checked every 30 minutes)
 const sweeper = setInterval(() => {
   cancelStaleUnpaidOrders().then(
