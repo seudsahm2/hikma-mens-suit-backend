@@ -304,6 +304,20 @@ model DeliveryOption {
   sortOrder   Int     @default(0)
 }
 
+/// Website "sign in through the bot" requests. Stored in the database (not memory) so they survive
+/// server restarts/sleep and work with more than one server. `id` is the SHA-256 of the token sent to
+/// the browser, so a database leak can't be used to complete someone's sign-in.
+model LoginToken {
+  id          String    @id
+  telegramId  BigInt?
+  identity    Json?
+  confirmedAt DateTime?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+
+  @@index([expiresAt])
+}
+
 /// One-time codes the owner sends to the bot ("/link CODE") to connect a chat or channel.
 /// Stored in the database so they survive server restarts (Render restarts on every deploy).
 model LinkCode {

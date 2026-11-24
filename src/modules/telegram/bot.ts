@@ -44,7 +44,7 @@ if (bot) {
     // Website sign-in: /start login_<token>. ctx.from is Telegram's own verified sender info.
     const payload = String(ctx.match ?? '');
     if (payload.startsWith('login_') && ctx.from) {
-      const ok = confirmLoginToken(payload.slice(6), {
+      const ok = await confirmLoginToken(payload.slice(6), {
         id: ctx.from.id,
         firstName: ctx.from.first_name,
         lastName: ctx.from.last_name,

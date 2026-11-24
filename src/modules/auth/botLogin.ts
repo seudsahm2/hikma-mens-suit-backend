@@ -1,56 +1,67 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
+import { prisma } from '../../lib/prisma';
 import type { TelegramIdentity } from './telegramVerify';
 
 /**
  * "Sign in through the bot":
  *   1. the website asks for a one-time token and opens t.me/<bot>?start=login_<token>
- *   2. the user taps Start; the bot receives /start login_<token> together with their verified Telegram identity
+ *   2. the user taps Start; the bot receives /start login_<token> with their Telegram identity
+ *      (Telegram guarantees ctx.from — it can't be forged by the user)
  *   3. the website polls with the token and receives a session once the bot has confirmed it
  *
- * Tokens live in memory for 5 minutes (one server instance; a login takes seconds).
+ * Tokens are stored in the database (hashed), so they survive restarts, Render's free-plan sleep and
+ * deploys, and work with several server instances.
  */
-const TTL_MS = 5 * 60 * 1000;
-const MAX_PENDING = 5000;
+export const LOGIN_TOKEN_TTL_SECONDS = 10 * 60;
 
-interface Entry {
-  expires: number;
-  identity: TelegramIdentity | null;
+/** base64url keeps it inside Telegram's start-parameter alphabet [A-Za-z0-9_-]; 32 chars + "login_" ≤ 64. */
+export function newLoginToken(): string {
+  return randomBytes(24).toString('base64url');
 }
 
-const tokens = new Map<string, Entry>();
-
-function sweep() {
-  const now = Date.now();
-  for (const [k, v] of tokens) if (v.expires < now) tokens.delete(k);
+export function hashLoginToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
 }
 
-export function createLoginToken(): string {
-  sweep();
-  if (tokens.size >= MAX_PENDING) throw new Error('Too many pending logins');
-  // base64url keeps it inside Telegram's allowed start-parameter characters [A-Za-z0-9_-]
-  const token = randomBytes(24).toString('base64url');
-  tokens.set(token, { expires: Date.now() + TTL_MS, identity: null });
-  return token;
+export function isWellFormedToken(token: string): boolean {
+  return /^[A-Za-z0-9_-]{32}$/.test(token);
+}
+
+export async function createLoginToken(): Promise<{ token: string; expiresAt: Date }> {
+  // Opportunistic cleanup keeps the table small without a cron job
+  await prisma.loginToken.deleteMany({ where: { expiresAt: { lt: new Date(Date.now() - 3600_000) } } });
+  const token = newLoginToken();
+  const expiresAt = new Date(Date.now() + LOGIN_TOKEN_TTL_SECONDS * 1000);
+  await prisma.loginToken.create({ data: { id: hashLoginToken(token), expiresAt } });
+  return { token, expiresAt };
 }
 
 /** Called by the bot when the user taps Start. Returns false if the token is unknown or expired. */
-export function confirmLoginToken(token: string, identity: TelegramIdentity): boolean {
-  const entry = tokens.get(token);
-  if (!entry || entry.expires < Date.now()) return false;
-  entry.identity = identity;
-  return true;
+export async function confirmLoginToken(token: string, identity: TelegramIdentity): Promise<boolean> {
+  if (!isWellFormedToken(token)) return false;
+  const result = await prisma.loginToken.updateMany({
+    where: { id: hashLoginToken(token), expiresAt: { gt: new Date() }, confirmedAt: null },
+    data: {
+      telegramId: BigInt(identity.id),
+      identity: identity as unknown as Prisma.InputJsonValue,
+      confirmedAt: new Date(),
+    },
+  });
+  return result.count === 1;
 }
 
 export type LoginTokenState = { status: 'pending' } | { status: 'expired' } | { status: 'confirmed'; identity: TelegramIdentity };
 
-/** Website polling. A confirmed token is consumed (works once). */
-export function checkLoginToken(token: string): LoginTokenState {
-  const entry = tokens.get(token);
-  if (!entry || entry.expires < Date.now()) {
-    tokens.delete(token);
-    return { status: 'expired' };
-  }
-  if (!entry.identity) return { status: 'pending' };
-  tokens.delete(token);
-  return { status: 'confirmed', identity: entry.identity };
+/** Website polling. A confirmed token is consumed atomically, so it signs in exactly once. */
+export async function checkLoginToken(token: string): Promise<LoginTokenState> {
+  if (!isWellFormedToken(token)) return { status: 'expired' };
+  const id = hashLoginToken(token);
+  const row = await prisma.loginToken.findUnique({ where: { id } });
+  if (!row || row.expiresAt < new Date()) return { status: 'expired' };
+  if (!row.confirmedAt || !row.identity) return { status: 'pending' };
+  // Delete-then-return: two simultaneous polls can't both get a session
+  const deleted = await prisma.loginToken.deleteMany({ where: { id, confirmedAt: { not: null } } });
+  if (deleted.count !== 1) return { status: 'expired' };
+  return { status: 'confirmed', identity: row.identity as unknown as TelegramIdentity };
 }

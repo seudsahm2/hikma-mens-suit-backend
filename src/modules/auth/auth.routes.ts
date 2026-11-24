@@ -11,11 +11,25 @@ import { normalizeEthiopianPhone } from '../../lib/phone';
 import { requireAuth } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { verifyLoginWidget, verifyMiniAppInitData, type TelegramIdentity } from './telegramVerify';
-import { checkLoginToken, createLoginToken } from './botLogin';
+import { checkLoginToken, createLoginToken, LOGIN_TOKEN_TTL_SECONDS } from './botLogin';
 
 export const authRouter = Router();
 
-const authLimiter = limiter({ windowMs: 15 * 60 * 1000, limit: 40 });
+/*
+ * Rate limits, per purpose:
+ *  - Customer sign-in is generous per IP: Ethiopian mobile carriers put many customers behind one
+ *    public IP (CGNAT), so a tight per-IP limit would lock out real people at busy times. These
+ *    endpoints can't be used to guess anything (Telegram signs the identity), so abuse risk is low.
+ *  - Sign-in status polling is limited per sign-in token, not per IP.
+ *  - Staff password login stays strict per IP: that one can be brute-forced.
+ */
+const signInLimiter = limiter({ windowMs: 15 * 60 * 1000, limit: 600 });
+const staffLoginLimiter = limiter({ windowMs: 15 * 60 * 1000, limit: 20 });
+const pollLimiter = limiter({
+  windowMs: 60 * 1000,
+  limit: 90, // polling every 2 s = 30/min, with headroom for a second tab
+  keyGenerator: (req) => `poll:${String(req.params.token).slice(0, 64)}`,
+});
 
 export function publicUser(u: User) {
   return {
@@ -61,7 +75,7 @@ async function upsertTelegramCustomer(t: TelegramIdentity) {
 // Telegram Mini App: silent sign-in from initData
 authRouter.post(
   '/telegram/miniapp',
-  authLimiter,
+  signInLimiter,
   validate(z.object({ initData: z.string().min(10).max(4096) })),
   ah(async (req, res) => {
     const identity = verifyMiniAppInitData(req.body.initData, requireBotToken());
@@ -74,7 +88,7 @@ authRouter.post(
 // Website: Telegram Login Widget
 authRouter.post(
   '/telegram/widget',
-  authLimiter,
+  signInLimiter,
   validate(
     z.object({
       id: z.coerce.number().int().positive(),
@@ -95,18 +109,17 @@ authRouter.post(
 );
 
 // Website: sign in through the bot (no phone number, no code)
-const pollLimiter = limiter({ windowMs: 60 * 1000, limit: 120 });
-
 authRouter.post(
   '/telegram/bot-login',
-  authLimiter,
+  signInLimiter,
   ah(async (_req, res) => {
     requireBotToken();
-    const token = createLoginToken();
+    const { token, expiresAt } = await createLoginToken();
     res.json({
       token,
       url: `https://t.me/${env.TELEGRAM_BOT_USERNAME}?start=login_${token}`,
-      expiresInSeconds: 300,
+      expiresAt: expiresAt.toISOString(),
+      expiresInSeconds: LOGIN_TOKEN_TTL_SECONDS,
     });
   }),
 );
@@ -115,7 +128,8 @@ authRouter.get(
   '/telegram/bot-login/:token',
   pollLimiter,
   ah(async (req, res) => {
-    const state = checkLoginToken(String(req.params.token));
+    res.set('Cache-Control', 'no-store');
+    const state = await checkLoginToken(String(req.params.token));
     if (state.status === 'pending') return res.json({ status: 'pending' });
     if (state.status === 'expired') return res.status(410).json({ status: 'expired' });
     const user = await upsertTelegramCustomer(state.identity);
@@ -141,7 +155,7 @@ if (!env.isProd && env.DEV_LOGIN) {
 // Staff (owner / admins): phone + password
 authRouter.post(
   '/staff/login',
-  authLimiter,
+  staffLoginLimiter,
   validate(z.object({ phone: z.string().min(9).max(20), password: z.string().min(1).max(200) })),
   ah(async (req, res) => {
     const phone = normalizeEthiopianPhone(req.body.phone);
@@ -157,11 +171,20 @@ authRouter.post(
   }),
 );
 
+/**
+ * Who am I. For customers this also renews the session (sliding expiry): the app calls it on start,
+ * so anyone who keeps using the shop stays signed in; an unused session expires after 60 days.
+ */
 authRouter.get(
   '/me',
   requireAuth,
   ah(async (req, res) => {
-    res.json({ user: publicUser(req.user!) });
+    res.set('Cache-Control', 'no-store');
+    const user = req.user!;
+    res.json({
+      user: publicUser(user),
+      ...(user.role === 'CUSTOMER' ? { token: signToken({ sub: user.id, role: 'CUSTOMER' }) } : {}),
+    });
   }),
 );
 

@@ -1,24 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { checkLoginToken, confirmLoginToken, createLoginToken } from '../src/modules/auth/botLogin';
+import { hashLoginToken, isWellFormedToken, newLoginToken } from '../src/modules/auth/botLogin';
 
-const who = { id: 42, firstName: 'Abel', username: 'abel' };
-
+// Database behaviour (create → confirm → consume once) is covered by the integration check in
+// docs/README; these tests cover the pure parts that must never change silently.
 describe('bot login tokens', () => {
-  it('uses only characters Telegram allows in a start parameter', () => {
-    const t = createLoginToken();
-    expect(`login_${t}`).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+  it('fits Telegram start-parameter rules (alphabet and 64-char limit including "login_")', () => {
+    for (let i = 0; i < 50; i++) {
+      const t = newLoginToken();
+      expect(isWellFormedToken(t)).toBe(true);
+      expect(`login_${t}`).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    }
   });
 
-  it('is pending until the bot confirms it, then works exactly once', () => {
-    const t = createLoginToken();
-    expect(checkLoginToken(t)).toEqual({ status: 'pending' });
-    expect(confirmLoginToken(t, who)).toBe(true);
-    expect(checkLoginToken(t)).toEqual({ status: 'confirmed', identity: who });
-    expect(checkLoginToken(t)).toEqual({ status: 'expired' });
+  it('stores only a hash, never the token itself', () => {
+    const t = newLoginToken();
+    const h = hashLoginToken(t);
+    expect(h).toMatch(/^[a-f0-9]{64}$/);
+    expect(h).not.toContain(t);
+    expect(hashLoginToken(t)).toBe(h);
   });
 
-  it('rejects unknown tokens', () => {
-    expect(confirmLoginToken('nope', who)).toBe(false);
-    expect(checkLoginToken('nope')).toEqual({ status: 'expired' });
+  it('rejects malformed tokens before touching the database', () => {
+    expect(isWellFormedToken('nope')).toBe(false);
+    expect(isWellFormedToken('a'.repeat(33))).toBe(false);
+    expect(isWellFormedToken('../../etc/passwd________________')).toBe(false);
   });
 });

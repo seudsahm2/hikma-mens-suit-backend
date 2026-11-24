@@ -7,6 +7,7 @@
  *
  * Products come from the Telegram channel import: npm run import:telegram
  */
+import '../src/config/loadEnv'; // respects ENV_FILE; must come before PrismaClient
 import { PrismaClient } from '@prisma/client';
 import { categories, defaultReturnPolicy, deliveryOptions, paymentMethods } from './data';
 
