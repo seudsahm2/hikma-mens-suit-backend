@@ -10,7 +10,7 @@ import { onStockRestored } from '../alerts/backInStock';
 import { canMoveTo, isFinalStatus, STATUS_LABEL } from './rules';
 import { mergeSizeProfile } from '../../lib/sizeProfile';
 import { creditBalance, quote, type DiscountLine } from '../pricing/pricing';
-import { onOrderCancelled, onOrderReceived, safely } from '../pricing/rewards';
+import { onOrderCancelled, onOrderPlaced, onOrderReceived, safely } from '../pricing/rewards';
 export { canMoveTo, isFinalStatus, STATUS_LABEL } from './rules';
 
 // ─── Serialisation ───────────────────────────────────────
@@ -104,8 +104,10 @@ export interface CreateOrderInput {
   payDeposit: boolean;
   note?: string;
   source: OrderSource;
-  /** promo code or a friend's invite code */
+  /** promo code (or a typed invite code) */
   code?: string;
+  /** invite code from a friend's link */
+  invite?: string;
   /** pay part with Hikma credit */
   useCredit?: boolean;
 }
@@ -157,7 +159,7 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
   // Discounts: bundles, one promotion, credit — the same calculation as the checkout quote
   const priced = await quote(
     variants.map((v) => ({ variantId: v.id, productId: v.productId, categorySlug: v.product.category.slug, unitPrice: v.price ?? v.product.basePrice, quantity: qty.get(v.id)! })),
-    { user, code: input.code, useCredit: input.useCredit },
+    { user, code: input.code, invite: input.invite, useCredit: input.useCredit },
   );
   if (input.code && !priced.codeApplied && priced.codeError && priced.codeError !== 'A better offer is already applied') {
     throw badRequest(priced.codeError, 'CODE');
@@ -257,9 +259,10 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
       .catch(() => prisma.user.update({ where: { id: user.id }, data }).catch(() => undefined));
   }
 
-  // Remember who invited this customer (first time only)
-  if (user && priced.referrerId && !user.referredById) {
-    void prisma.user.updateMany({ where: { id: user.id, referredById: null }, data: { referredById: priced.referrerId } }).catch(() => undefined);
+  // Remember who invited this customer (first time only) and tell the inviter a reward is on the way
+  if (user && priced.referrerId) {
+    if (!user.referredById) void prisma.user.updateMany({ where: { id: user.id, referredById: null }, data: { referredById: priced.referrerId } }).catch(() => undefined);
+    safely(() => onOrderPlaced(order.id), 'invite notice');
   }
   // The bag became an order: no 'you left something in your bag' reminder
   if (user) void prisma.cartSnapshot.deleteMany({ where: { userId: user.id } }).catch(() => undefined);

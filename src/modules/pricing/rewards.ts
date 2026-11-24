@@ -10,7 +10,7 @@ import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { bot, shopUrl } from '../telegram/bot';
-import { creditBalance } from './pricing';
+import { creditBalance, resolveInvite } from './pricing';
 
 /** VIP levels by total received spend. Higher levels earn more credit per order. */
 export const TIERS = [
@@ -104,12 +104,18 @@ export async function ensureReferralCode(userId: string) {
 
 /** Everything the "My rewards" card shows. */
 export async function rewardsSummary(userId: string) {
-  const [settings, balance, spend, history] = await Promise.all([
+  const [settings, balance, spend, history, joined, ordered, rewarded] = await Promise.all([
     prisma.settings.findUniqueOrThrow({ where: { id: 'default' } }),
     creditBalance(userId),
     lifetimeSpend(userId),
     prisma.creditEntry.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 20 }),
+    prisma.user.count({ where: { referredById: userId } }),
+    prisma.order.findMany({ where: { referrerId: userId, status: { not: 'CANCELLED' } }, select: { userId: true, status: true } }),
+    prisma.creditEntry.aggregate({ where: { userId, reason: 'referral' }, _sum: { amount: true }, _count: true }),
   ]);
+  const received = new Set(['DELIVERED', 'PICKED_UP']);
+  const friendsOrdered = new Set(ordered.map((o) => o.userId)).size;
+  const pendingFriends = new Set(ordered.filter((o) => !received.has(o.status)).map((o) => o.userId)).size;
   const tier = tierFor(spend);
   const next = TIERS.find((t) => t.from > spend) ?? null;
   const code = settings.referralEnabled ? await ensureReferralCode(userId) : null;
@@ -126,10 +132,46 @@ export async function rewardsSummary(userId: string) {
           reward: settings.referralReward,
           friendDiscount: settings.referralFriendDiscount,
           minSubtotal: settings.referralMinSubtotal,
+          friends: {
+            joined: Math.max(joined, friendsOrdered),
+            ordered: friendsOrdered,
+            rewarded: rewarded._count,
+            earned: rewarded._sum.amount ?? 0,
+            pending: pendingFriends * settings.referralReward,
+          },
         }
       : null,
     history: history.map((h) => ({ id: h.id, amount: h.amount, reason: h.reason, note: h.note, createdAt: h.createdAt })),
   };
+}
+
+/**
+ * A signed-in customer arrived with an invite code (link opened in Telegram or on the website):
+ * save the inviter on their account right away, so the invite follows them to any device.
+ */
+export async function attachInvite(userId: string, code: string) {
+  const [user, settings] = await Promise.all([
+    prisma.user.findUniqueOrThrow({ where: { id: userId } }),
+    prisma.settings.findUniqueOrThrow({ where: { id: 'default' } }),
+  ]);
+  if (user.referredById) return { attached: false, reason: 'already' as const };
+  const { inviter, error } = await resolveInvite(user, code, settings, Number.MAX_SAFE_INTEGER);
+  if (!inviter || error) return { attached: false, reason: error ?? 'invalid' };
+  const saved = await prisma.user.updateMany({ where: { id: userId, referredById: null }, data: { referredById: inviter.id } });
+  if (saved.count) {
+    const first = user.fullName.split(/\s+/)[0] ?? 'Your friend';
+    await tell(inviter.id, `🤝 <b>${first}</b> joined with your invite. You get <b>${settings.referralReward.toLocaleString('en-US')} ETB</b> credit when their first order arrives.`);
+  }
+  return { attached: saved.count > 0, inviterName: inviter.fullName.split(/\s+/)[0] ?? '' };
+}
+
+/** The friend placed an order with the invite → let the inviter know a reward is on the way. */
+export async function onOrderPlaced(orderId: string) {
+  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: { select: { fullName: true } } } });
+  if (!order?.referrerId) return;
+  const settings = await prisma.settings.findUniqueOrThrow({ where: { id: 'default' } });
+  const first = order.user?.fullName.split(/\s+/)[0] ?? 'Your friend';
+  await tell(order.referrerId, `🛍 <b>${first}</b> placed their first order. Your <b>${settings.referralReward.toLocaleString('en-US')} ETB</b> credit arrives as soon as it’s delivered.`);
 }
 
 /** Failures here must never break an order status change. */

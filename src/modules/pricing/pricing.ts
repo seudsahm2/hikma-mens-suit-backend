@@ -4,8 +4,9 @@
  *
  * Order of discounts:
  *   1. "Complete the look" bundles — automatic, item level, always stack
- *   2. ONE promotion — the best of: running campaigns, the code the customer typed, or a friend's invite
- *   3. Shop credit — if the customer chooses to use it, up to Settings.creditMaxPercent of what's left
+ *   2. ONE promotion — the best of: running campaigns or the promo code the customer typed
+ *   3. A friend's invite (first order only) — stacks, so a running sale never cancels an invite
+ *   4. Shop credit — if the customer chooses to use it, up to Settings.creditMaxPercent of what's left
  */
 import type { Prisma, Promotion, Settings, User } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
@@ -39,6 +40,9 @@ export interface Quote {
   /** why the typed code didn't apply (shown under the code field) */
   codeError: string | null;
   codeApplied: boolean;
+  /** the invite that applies (from a link, a typed invite code, or the account's saved inviter) */
+  invite: { code: string | null; inviterName: string } | null;
+  inviteError: string | null;
 }
 
 const pct = (amount: number, percent: number) => Math.round((amount * percent) / 100);
@@ -111,6 +115,7 @@ async function bestPromotion(lines: PriceLine[], base: number, user: User | null
   const now = new Date();
   const candidates: Candidate[] = [];
   let codeError: string | null = null;
+  let typedInvite: string | null = null;
 
   // Running campaigns (no code)
   const auto = await prisma.promotion.findMany({ where: { code: null, isActive: true } });
@@ -149,16 +154,7 @@ async function bestPromotion(lines: PriceLine[], base: number, user: User | null
           typed: true,
         });
     } else {
-      const inviter = settings.referralEnabled ? await prisma.user.findUnique({ where: { referralCode: code } }) : null;
-      if (!inviter) codeError = 'This code doesn’t exist';
-      else if (!user) codeError = 'Sign in with Telegram to use an invite';
-      else if (inviter.id === user.id) codeError = 'This is your own invite code — share it with friends';
-      else if (!(await isNewCustomer(user.id))) codeError = 'Invites are for a first order';
-      else if (base < settings.referralMinSubtotal) codeError = `Invites apply from ${settings.referralMinSubtotal.toLocaleString('en-US')} ETB`;
-      else {
-        const amount = Math.min(settings.referralFriendDiscount, base);
-        candidates.push({ amount, line: { kind: 'referral', label: 'Friend’s invite', amount, code }, promotion: null, gift: null, referrerId: inviter.id, typed: true });
-      }
+      typedInvite = code; // not a promo code: maybe a friend's invite code (checked in the invite step)
     }
   }
 
@@ -166,13 +162,33 @@ async function bestPromotion(lines: PriceLine[], base: number, user: User | null
   candidates.sort((a, b) => b.amount - a.amount || Number(b.typed) - Number(a.typed));
   const best = candidates[0] ?? null;
   const codeApplied = Boolean(best?.typed);
-  if (typedCode && !codeError && !codeApplied) codeError = 'A better offer is already applied';
-  return { best, codeError, codeApplied };
+  if (typedCode && !typedInvite && !codeError && !codeApplied) codeError = 'A better offer is already applied';
+  return { best, codeError, codeApplied, typedInvite };
+}
+
+// ─── 3. Friend's invite ──────────────────────────────────
+
+/**
+ * Who invited this customer: the invite code they came with (link / typed), or the inviter already
+ * saved on their account. Only for a customer's first order.
+ */
+export async function resolveInvite(user: User | null, code: string | null, settings: Settings, base: number) {
+  if (!settings.referralEnabled) return { inviter: null, error: code ? 'Invites are not active right now' : null };
+  const inviter = code
+    ? await prisma.user.findUnique({ where: { referralCode: code.trim().toUpperCase() } })
+    : user?.referredById
+      ? await prisma.user.findUnique({ where: { id: user.referredById } })
+      : null;
+  if (!inviter) return { inviter: null, error: code ? 'This code doesn’t exist' : null };
+  if (user && inviter.id === user.id) return { inviter: null, error: 'This is your own invite — share it with friends' };
+  if (user && !(await isNewCustomer(user.id))) return { inviter: null, error: code ? 'Invites are for a first order' : null };
+  if (base < settings.referralMinSubtotal) return { inviter, error: `Your friend’s invite applies from ${settings.referralMinSubtotal.toLocaleString('en-US')} ETB`, tooSmall: true };
+  return { inviter, error: null };
 }
 
 // ─── Quote ───────────────────────────────────────────────
 
-export async function quote(lines: PriceLine[], opts: { user: User | null; code?: string | null; useCredit?: boolean }): Promise<Quote> {
+export async function quote(lines: PriceLine[], opts: { user: User | null; code?: string | null; invite?: string | null; useCredit?: boolean }): Promise<Quote> {
   const settings = await prisma.settings.findUniqueOrThrow({ where: { id: 'default' } });
   const subtotal = lines.reduce((n, l) => n + l.unitPrice * l.quantity, 0);
   const discounts: DiscountLine[] = [];
@@ -180,11 +196,24 @@ export async function quote(lines: PriceLine[], opts: { user: User | null; code?
   discounts.push(...(await bundleDiscounts(lines)));
   let remaining = subtotal - discounts.reduce((n, d) => n + d.amount, 0);
 
-  const { best, codeError, codeApplied } = await bestPromotion(lines, remaining, opts.user, opts.code ?? null, settings);
+  const { best, codeError, codeApplied, typedInvite } = await bestPromotion(lines, remaining, opts.user, opts.code ?? null, settings);
   if (best?.line) {
     best.line.amount = Math.min(best.line.amount, remaining);
     discounts.push(best.line);
     remaining -= best.line.amount;
+  }
+
+  // Invite stacks on top (a typed invite code wins over a link's)
+  const inviteCode = typedInvite ?? opts.invite ?? null;
+  const inv = await resolveInvite(opts.user, inviteCode, settings, remaining);
+  let referrerId: string | null = null;
+  if (inv.inviter && !inv.tooSmall && remaining > 0) {
+    const amount = Math.min(settings.referralFriendDiscount, remaining);
+    if (amount > 0) {
+      discounts.push({ kind: 'referral', label: 'Friend’s invite', amount, ...(inviteCode ? { code: inviteCode.toUpperCase() } : {}) });
+      remaining -= amount;
+      referrerId = inv.inviter.id;
+    }
   }
 
   const balance = opts.user ? await creditBalance(opts.user.id) : 0;
@@ -205,10 +234,12 @@ export async function quote(lines: PriceLine[], opts: { user: User | null; code?
     itemsTotal: subtotal - discountTotal,
     promotion: best?.promotion ? { id: best.promotion.id, name: best.promotion.name, code: best.promotion.code, type: best.promotion.type } : null,
     giftNote: best?.gift ?? null,
-    referrerId: best?.referrerId ?? null,
+    referrerId,
     creditUsed,
     creditBalance: balance,
-    codeError,
-    codeApplied,
+    codeError: typedInvite ? inv.error : codeError,
+    codeApplied: codeApplied || Boolean(typedInvite && referrerId),
+    invite: inv.inviter && referrerId ? { code: inviteCode, inviterName: inv.inviter.fullName.split(/\s+/)[0] ?? '' } : null,
+    inviteError: typedInvite ? null : inv.error,
   };
 }

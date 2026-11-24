@@ -7,7 +7,7 @@ import { limiter } from '../../middleware/rateLimit';
 import { validate } from '../../middleware/validate';
 import { productInclude, serializeProduct } from '../catalog/serialize';
 import { quote } from './pricing';
-import { rewardsSummary } from './rewards';
+import { attachInvite, rewardsSummary } from './rewards';
 
 /** Checkout price quote, running campaigns, "complete the look" sets, and the customer's rewards. */
 export const pricingRouter = Router();
@@ -20,11 +20,12 @@ pricingRouter.post(
     z.object({
       items: z.array(z.object({ variantId: z.string().min(1).max(40), quantity: z.number().int().min(1).max(20) })).min(1).max(30),
       code: z.string().trim().max(40).optional(),
+      invite: z.string().trim().max(40).optional(),
       useCredit: z.boolean().default(false),
     }),
   ),
   ah(async (req, res) => {
-    const { items, code, useCredit } = req.body as { items: { variantId: string; quantity: number }[]; code?: string; useCredit: boolean };
+    const { items, code, invite, useCredit } = req.body as { items: { variantId: string; quantity: number }[]; code?: string; invite?: string; useCredit: boolean };
     const qty = new Map<string, number>();
     for (const it of items) qty.set(it.variantId, (qty.get(it.variantId) ?? 0) + it.quantity);
     const variants = await prisma.productVariant.findMany({
@@ -33,7 +34,7 @@ pricingRouter.post(
     });
     const q = await quote(
       variants.map((v) => ({ variantId: v.id, productId: v.productId, categorySlug: v.product.category.slug, unitPrice: v.price ?? v.product.basePrice, quantity: qty.get(v.id)! })),
-      { user: req.user ?? null, code, useCredit },
+      { user: req.user ?? null, code, invite, useCredit },
     );
     res.set('Cache-Control', 'no-store');
     res.json({
@@ -46,6 +47,8 @@ pricingRouter.post(
       creditBalance: q.creditBalance,
       codeError: q.codeError,
       codeApplied: q.codeApplied,
+      invite: q.invite,
+      inviteError: q.inviteError,
     });
   }),
 );
@@ -94,6 +97,17 @@ pricingRouter.get(
           products: b.items.map((i) => serializeProduct(i.product)),
         })),
     });
+  }),
+);
+
+/** Save the inviter on the signed-in customer's account (called when they arrive with an invite). */
+pricingRouter.post(
+  '/rewards/invite',
+  requireAuth,
+  limiter({ windowMs: 60 * 60_000, limit: 30 }),
+  validate(z.object({ code: z.string().trim().min(3).max(40) })),
+  ah(async (req, res) => {
+    res.json(await attachInvite(req.user!.id, req.body.code));
   }),
 );
 
