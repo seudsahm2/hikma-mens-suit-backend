@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
+import { limiter } from '../../middleware/rateLimit';
 import { z } from 'zod';
 import { prisma } from '../../lib/prisma';
 import { ah, badRequest, notFound } from '../../lib/http';
@@ -13,7 +13,7 @@ import { createOrder, orderInclude, serializeOrder, submitPayment } from './orde
 export const ordersRouter = Router();
 ordersRouter.use(requireAuth);
 
-const orderLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
+const orderLimiter = limiter({ windowMs: 60 * 60 * 1000, limit: 30 });
 
 const createSchema = z.object({
   items: z

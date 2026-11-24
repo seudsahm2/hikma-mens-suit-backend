@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
+import { limiter } from '../../middleware/rateLimit';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import type { User } from '@prisma/client';
@@ -15,7 +15,7 @@ import { checkLoginToken, createLoginToken } from './botLogin';
 
 export const authRouter = Router();
 
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+const authLimiter = limiter({ windowMs: 15 * 60 * 1000, limit: 40 });
 
 export function publicUser(u: User) {
   return {
@@ -95,7 +95,7 @@ authRouter.post(
 );
 
 // Website: sign in through the bot (no phone number, no code)
-const pollLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
+const pollLimiter = limiter({ windowMs: 60 * 1000, limit: 120 });
 
 authRouter.post(
   '/telegram/bot-login',
