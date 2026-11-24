@@ -19,6 +19,19 @@ async function main() {
   if (!env.clientUrl.startsWith('https://')) throw new Error('CLIENT_URL must be https:// for the Mini App');
 
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
+
+  // Telegram rate limits (429 "retry after N") are common when setup is run several times in a row:
+  // wait the time Telegram asks for and try again, instead of failing.
+  bot.api.config.use(async (prev, method, payload, signal) => {
+    for (let attempt = 1; ; attempt++) {
+      const res = await prev(method, payload, signal);
+      const wait = !res.ok && res.error_code === 429 ? (res.parameters?.retry_after ?? 5) : 0;
+      if (!wait || attempt >= 4) return res;
+      console.log(`  … Telegram asks to wait ${wait}s (${method}), waiting…`);
+      await new Promise((r) => setTimeout(r, (wait + 1) * 1000));
+    }
+  });
+
   const me = await bot.api.getMe();
 
   // Safety: never reconfigure a different bot because of a pasted token from another project
