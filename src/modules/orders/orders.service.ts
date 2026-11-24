@@ -71,7 +71,7 @@ export function serializeOrder(o: OrderWithRelations, opts: { staff?: boolean } 
 // ─── Helpers ─────────────────────────────────────────────
 
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-function newOrderNumber(): string {
+export function newOrderNumber(): string {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   let rand = '';
@@ -205,6 +205,9 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
       .update({ where: { id: user.id }, data: { ...data, ...(user.phone ? {} : { phone: input.customerPhone }) } })
       .catch(() => prisma.user.update({ where: { id: user.id }, data }).catch(() => undefined));
   }
+
+  // The bag became an order: no 'you left something in your bag' reminder
+  if (user) void prisma.cartSnapshot.deleteMany({ where: { userId: user.id } }).catch(() => undefined);
 
   notifyOrderEvent(order.id, 'placed');
   return order;

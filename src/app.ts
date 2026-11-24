@@ -15,10 +15,12 @@ import { ordersRouter } from './modules/orders/orders.routes';
 import { settingsRouter } from './modules/settings/settings.routes';
 import { adminProductsRouter } from './modules/admin/products.routes';
 import { adminOrdersRouter } from './modules/admin/orders.routes';
+import { adminCounterRouter } from './modules/admin/counter.routes';
 import { adminStoreRouter } from './modules/admin/store.routes';
 import { telegramWebhook } from './modules/telegram/bot';
 import { geoRouter } from './modules/geo/geo.routes';
 import { alertsRouter } from './modules/alerts/alerts.routes';
+import { cartRouter } from './modules/cart/cart.routes';
 
 installBigIntJson();
 
@@ -76,8 +78,10 @@ export function createApp() {
   app.use('/api', catalogRouter);
   app.use('/api/orders', ordersRouter);
   app.use('/api/alerts', alertsRouter);
+  app.use('/api/cart', cartRouter);
   app.use('/api/admin/products', requireStaff, adminProductsRouter);
   app.use('/api/admin/orders', requireStaff, adminOrdersRouter);
+  app.use('/api/admin/counter', requireStaff, adminCounterRouter);
   app.use('/api/admin', requireStaff, adminStoreRouter);
 
   app.use(notFoundHandler);

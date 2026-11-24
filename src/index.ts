@@ -7,6 +7,8 @@ import { cancelStaleUnpaidOrders } from './modules/orders/orders.service';
 import { bot, startChannelImportWorker, startPollingIfEnabled } from './modules/telegram/bot';
 import { notifyNewDraft } from './modules/telegram/notify';
 import { startBroadcastWorker } from './modules/telegram/broadcast';
+import { startDailyReportWorker } from './modules/reports/dailyReport';
+import { startBagReminderWorker } from './modules/cart/bagReminder';
 
 const app = createApp();
 
@@ -23,6 +25,9 @@ void startPollingIfEnabled();
 const stopChannelImport = startChannelImportWorker(notifyNewDraft);
 // New-arrival announcements are sent in batches in the background
 const stopBroadcasts = startBroadcastWorker();
+// Evening summary to the order-alerts chat, and one reminder for bags left behind
+const stopDailyReport = startDailyReportWorker();
+const stopBagReminders = startBagReminderWorker();
 
 // Catch a token from another bot early: sign-in links and the Mini App would silently fail
 if (bot) {
@@ -52,6 +57,8 @@ async function shutdown(signal: string) {
   clearInterval(sweeper);
   stopChannelImport();
   stopBroadcasts();
+  stopDailyReport();
+  stopBagReminders();
   if (bot && env.TELEGRAM_POLLING) await bot.stop().catch(() => undefined);
   server.close(() => {
     void prisma.$disconnect().finally(() => process.exit(0));

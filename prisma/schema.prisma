@@ -46,6 +46,7 @@ model User {
   orderEvents OrderEvent[]
   stockMoves  StockMovement[]
   stockAlerts StockAlert[]
+  cart        CartSnapshot?
 }
 
 /// "Notify me when back": one row per customer per sold-out size/colour.
@@ -239,6 +240,8 @@ enum OrderSource {
   WEB
   MINI_APP
   ADMIN
+  /// Walk-in sale at the shop counter (already paid and handed over)
+  COUNTER
 }
 
 model Order {
@@ -437,5 +440,27 @@ model Settings {
   paymentVerifyKey     String?
   channelChatId        String?
   adminChatId          String?
+  /// Evening summary sent to the order-alerts chat
+  dailyReport          Boolean  @default(true)
+  /// Hour (Addis Ababa time, 0–23) the daily report is sent
+  reportHour           Int      @default(21)
+  /// Addis date ("YYYY-MM-DD") of the last report sent, so it's sent once even across restarts
+  lastReportDate       String?
+  /// One Telegram reminder to signed-in customers who leave items in their bag
+  bagReminders         Boolean  @default(true)
   updatedAt            DateTime @updatedAt
+}
+
+/// The bag of a signed-in customer, kept on the server so a reminder can be sent if it's left behind.
+model CartSnapshot {
+  userId     String    @id
+  /// [{ variantId, quantity }]
+  items      Json
+  itemCount  Int       @default(0)
+  updatedAt  DateTime  @updatedAt
+  remindedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([updatedAt])
 }

@@ -123,6 +123,19 @@ if (bot) {
   // channel posts to this one handler, so the purpose is decided by where it was sent:
   //   channel              → product posts go to this channel   (bot must be a channel admin)
   //   private chat / group → new-order alerts go here
+  // Today's summary on demand — only in the order-alerts chat or for staff in private
+  bot.command('report', async (ctx) => {
+    if (!ctx.from) return;
+    const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
+    const inAlertsChat = settings?.adminChatId === String(ctx.chat.id);
+    const staff = await prisma.user.findFirst({
+      where: { telegramId: BigInt(ctx.from.id), role: { in: ['OWNER', 'ADMIN'] }, isActive: true },
+    });
+    if (!inAlertsChat && !(ctx.chat.type === 'private' && staff)) return;
+    const { sendDailyReport } = await import('../reports/dailyReport'); // lazy: avoids a circular import
+    await sendDailyReport(String(ctx.chat.id));
+  });
+
   bot.command('link', async (ctx) => {
     const isChannel = ctx.chat.type === 'channel';
     const result = await consumeLinkCode(String(ctx.match ?? ''), isChannel ? 'channel' : 'admin');

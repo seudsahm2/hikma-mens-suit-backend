@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { ADDIS_OFFSET_MS, startOfAddisDay } from '../../lib/addisTime';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { env } from '../../config/env';
@@ -310,6 +311,9 @@ const settingsSchema = z
     heroImageUrl: z.string().trim().max(500).nullable(),
     partialPaymentEnabled: z.boolean(),
     channelAutoImport: z.boolean(),
+    dailyReport: z.boolean(),
+    reportHour: z.number().int().min(0).max(23),
+    bagReminders: z.boolean(),
     depositPercent: z.number().int().min(10).max(90),
     returnPolicyEn: z.string().trim().max(3000),
     returnPolicyAm: z.string().trim().max(3000),
@@ -419,13 +423,6 @@ adminStoreRouter.post(
 
 // ─── Analytics ───────────────────────────────────────────
 
-/** Addis Ababa is UTC+3 all year (no daylight saving). */
-const ADDIS_OFFSET_MS = 3 * 3600_000;
-function startOfAddisDay(d = new Date()) {
-  const local = new Date(d.getTime() + ADDIS_OFFSET_MS);
-  local.setUTCHours(0, 0, 0, 0);
-  return new Date(local.getTime() - ADDIS_OFFSET_MS);
-}
 
 adminStoreRouter.get(
   '/analytics',
