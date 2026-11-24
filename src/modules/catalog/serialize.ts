@@ -66,7 +66,8 @@ export function serializeProductCard(p: FullProduct) {
     compareAtPrice: p.compareAtPrice,
     badge: p.badge,
     isNewArrival: p.isNewArrival,
-    inStock: p.variants.some((v) => v.isActive && v.stock > 0),
+    inStock: p.preorder || p.variants.some((v) => v.isActive && v.stock > 0),
+    preorder: p.preorder ? { note: p.preorderNote } : null,
     colors: uniqueColors(p.variants),
     images: sorted.slice(0, 2).map(serializeImage),
     /** Owner added proof photos (box, tags, receipt) */
@@ -86,7 +87,8 @@ export function serializeProduct(p: FullProduct) {
       color: v.color,
       colorHex: v.colorHex,
       price: v.price ?? p.basePrice,
-      available: Math.max(0, Math.min(v.stock, VISIBLE_STOCK_CAP)),
+      // Pre-order: every size can be ordered now and arrives later
+      available: p.preorder ? VISIBLE_STOCK_CAP : Math.max(0, Math.min(v.stock, VISIBLE_STOCK_CAP)),
     }));
   const sizeOrder = p.category.sizes;
   const sizes = [...new Set(variants.map((v) => v.size).filter(Boolean))].sort(

@@ -76,6 +76,8 @@ const productSchema = z.object({
   notesHeart: strList,
   notesBase: strList,
   tikTokUrl: optStr(300),
+  preorder: z.boolean().default(false),
+  preorderNote: optStr(80),
 });
 
 async function resolveBrandId(name: string | null): Promise<string | null> {
@@ -103,6 +105,7 @@ async function uniqueSlug(base: string, excludeId?: string) {
  * Products that are already on sale and sell out later are not affected.
  */
 async function assertSellable(productId: string | null) {
+  const preorder = productId ? (await prisma.product.findUnique({ where: { id: productId }, select: { preorder: true } }))?.preorder : false;
   const [images, stock] = productId
     ? await Promise.all([
         prisma.productImage.count({ where: { productId } }),
@@ -110,7 +113,7 @@ async function assertSellable(productId: string | null) {
       ])
     : [0, null];
   if (!images) throw badRequest('Add at least one photo before putting it on sale', 'NO_PHOTO');
-  if (!stock?._sum.stock) throw badRequest('Add how many you have (stock) before putting it on sale', 'NO_STOCK');
+  if (!preorder && !stock?._sum.stock) throw badRequest('Add how many you have (stock) before putting it on sale', 'NO_STOCK');
 }
 
 // List

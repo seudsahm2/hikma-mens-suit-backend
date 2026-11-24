@@ -182,6 +182,10 @@ model Product {
   /// Average of published reviews (kept in sync when reviews change) — cheap to show on cards
   ratingAvg       Float?
   ratingCount     Int           @default(0)
+  /// Pre-order: can be ordered without stock; customer pays the deposit now
+  preorder        Boolean       @default(false)
+  /// e.g. "Arrives from Turkey on 10 Dec"
+  preorderNote    String?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
@@ -316,53 +320,61 @@ enum OrderSource {
 }
 
 model Order {
-  id               String            @id @default(cuid())
-  orderNumber      String            @unique
-  userId           String?
-  source           OrderSource       @default(WEB)
-  customerName     String
-  customerPhone    String
-  telegramChatId   BigInt?
-  deliveryOptionId String
-  deliveryLabel    String
-  city             String?
-  area             String?
-  landmark         String?
-  lat              Float?
-  lng              Float?
-  subtotal         Int
-  deliveryFee      Int?
-  total            Int
-  costTotal        Int               @default(0)
+  id                String            @id @default(cuid())
+  orderNumber       String            @unique
+  userId            String?
+  source            OrderSource       @default(WEB)
+  customerName      String
+  customerPhone     String
+  telegramChatId    BigInt?
+  deliveryOptionId  String
+  deliveryLabel     String
+  city              String?
+  area              String?
+  landmark          String?
+  lat               Float?
+  lng               Float?
+  subtotal          Int
+  deliveryFee       Int?
+  total             Int
+  costTotal         Int               @default(0)
   // Amount the customer must pay now (full total, or the deposit)
-  amountDue        Int
-  amountPaid       Int               @default(0)
-  isDeposit        Boolean           @default(false)
-  paymentMethodId  String?
-  paymentLabel     String?
-  transactionRef   String?
-  paymentProofKey  String?
-  paymentStatus    PaymentStatus     @default(UNPAID)
-  status           OrderStatus       @default(PENDING)
-  note             String?
+  amountDue         Int
+  amountPaid        Int               @default(0)
+  isDeposit         Boolean           @default(false)
+  paymentMethodId   String?
+  paymentLabel      String?
+  transactionRef    String?
+  paymentProofKey   String?
+  paymentStatus     PaymentStatus     @default(UNPAID)
+  status            OrderStatus       @default(PENDING)
+  note              String?
   /// Result of the last automatic payment check or a duplicate-reference warning (shown to staff)
-  paymentCheck     String?
+  paymentCheck      String?
   /// When the customer was asked (on Telegram) to review this order
-  reviewAskedAt    DateTime?
+  reviewAskedAt     DateTime?
+  /// Driver delivering this order (Batch D)
+  driverId          String?
+  driver            Driver?           @relation(fields: [driverId], references: [id])
+  /// Ordered while the product was on pre-order (arrives later)
+  isPreorder        Boolean           @default(false)
+  /// 4-digit code the customer gives the driver to confirm delivery (only the customer sees it)
+  deliveryCode      String?
+  deliveryCodeTries Int               @default(0)
   /// Discounts (all computed on the server): total and breakdown [{ kind, label, amount, code? }]
-  discountTotal    Int               @default(0)
-  discounts        Json?
+  discountTotal     Int               @default(0)
+  discounts         Json?
   /// Free gift promised by a promotion ("Free perfume sample") — staff add it to the parcel
-  giftNote         String?
-  promotionId      String?
-  creditUsed       Int               @default(0)
+  giftNote          String?
+  promotionId       String?
+  creditUsed        Int               @default(0)
   /// Customer who invited the buyer (referral reward goes to them once this order is received)
-  referrerId       String?
-  promotion        Promotion?        @relation(fields: [promotionId], references: [id])
-  exchanges        ExchangeRequest[]
-  supportRequests  SupportRequest[]
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+  referrerId        String?
+  promotion         Promotion?        @relation(fields: [promotionId], references: [id])
+  exchanges         ExchangeRequest[]
+  supportRequests   SupportRequest[]
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
 
   user   User?        @relation(fields: [userId], references: [id])
   items  OrderItem[]
@@ -700,4 +712,37 @@ model SupportRequest {
 
   @@index([status, updatedAt])
   @@index([orderId])
+}
+
+// ─── Running the shop ────────────────────────────────────
+
+/// Delivery person. Linked to their Telegram with a one-time code (/driver CODE), then gets order cards.
+model Driver {
+  id              String   @id @default(cuid())
+  name            String
+  phone           String
+  telegramId      BigInt?  @unique
+  linkCode        String?  @unique
+  isActive        Boolean  @default(true)
+  /// The order whose delivery code this driver is typing right now (in the bot chat)
+  awaitingOrderId String?
+  createdAt       DateTime @default(now())
+
+  orders Order[]
+}
+
+/// Who did what in the admin (owner only). Written automatically for every staff change.
+model ActivityLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actorName String
+  action    String
+  summary   String
+  /// order | product | promotion | settings | staff | support | exchange | counter | review | driver
+  entity    String?
+  entityId  String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
 }

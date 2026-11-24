@@ -65,7 +65,9 @@ export function serializeOrder(o: OrderWithRelations, opts: { staff?: boolean } 
       quantity: i.quantity,
       ...(opts.staff ? { costPrice: i.costPrice } : {}),
     })),
-    ...(opts.staff ? { costTotal: o.costTotal, profit: o.total - (o.deliveryFee ?? 0) - o.costTotal, paymentCheck: o.paymentCheck } : {}),
+    ...(opts.staff
+      ? { costTotal: o.costTotal, profit: o.total - (o.deliveryFee ?? 0) - o.costTotal, paymentCheck: o.paymentCheck, driverId: o.driverId, isPreorder: o.isPreorder }
+      : { deliveryCode: o.status === 'OUT_FOR_DELIVERY' ? o.deliveryCode : null, isPreorder: o.isPreorder }),
     events: o.events
       ?.filter((e) => opts.staff || !e.type.startsWith('internal'))
       .map((e) => ({ id: e.id, type: e.type, message: e.message, createdAt: e.createdAt })),
@@ -144,6 +146,7 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
     subtotal += unitPrice * quantity;
     costTotal += costPrice * quantity;
     return {
+      preorder: v.product.preorder,
       variantId: v.id,
       productId: v.productId,
       productName: v.product.nameEn,
@@ -167,12 +170,15 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
 
   const deliveryFee = delivery.fee;
   const total = priced.itemsTotal + (deliveryFee ?? 0);
-  const isDeposit = Boolean(input.payDeposit && settings.partialPaymentEnabled && payment.id !== 'cash');
+  const isPreorder = lines.some((l) => l.preorder);
+  // Pre-orders: the deposit is paid now (when deposits are on), the rest when it arrives
+  const isDeposit = Boolean((input.payDeposit || isPreorder) && settings.partialPaymentEnabled && payment.id !== 'cash');
   const amountDue = isDeposit ? Math.ceil((total * settings.depositPercent) / 100) : total;
 
   const order = await prisma.$transaction(async (tx) => {
     // Conditional decrement: fails if someone else bought the last piece first.
     for (const line of lines) {
+      if (line.preorder) continue; // arrives later — nothing to take from stock
       const updated = await tx.productVariant.updateMany({
         where: { id: line.variantId, stock: { gte: line.quantity } },
         data: { stock: { decrement: line.quantity } },
@@ -228,14 +234,15 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
         paymentMethodId: payment.id,
         paymentLabel: payment.name,
         note: input.note,
-        items: { create: lines },
-        events: { create: { type: 'placed', message: 'Order placed', actorId: actorId ?? user?.id ?? null } },
+        isPreorder,
+        items: { create: lines.map(({ preorder: _p, ...l }) => l) },
+        events: { create: { type: 'placed', message: isPreorder ? 'Pre-order placed' : 'Order placed', actorId: actorId ?? user?.id ?? null } },
       },
       include: orderInclude,
     });
 
     await tx.stockMovement.createMany({
-      data: lines.map((l) => ({ variantId: l.variantId, delta: -l.quantity, reason: 'ORDER' as const, orderId: created.id, actorId })),
+      data: lines.filter((l) => !l.preorder).map((l) => ({ variantId: l.variantId, delta: -l.quantity, reason: 'ORDER' as const, orderId: created.id, actorId })),
     });
     if (priced.creditUsed > 0 && user) {
       await tx.creditEntry.create({ data: { userId: user.id, amount: -priced.creditUsed, reason: 'redeem', orderId: created.id, note: created.orderNumber } });
@@ -419,7 +426,14 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
     const res = await tx.order.updateMany({
       where: { id: orderId, status: order.status },
       // Balance is collected on delivery / at pickup
-      data: { status, ...(delivered ? { amountPaid: order.total, paymentStatus: 'PAID' } : {}) },
+      data: {
+        status,
+        ...(delivered ? { amountPaid: order.total, paymentStatus: 'PAID' } : {}),
+        // Delivery code for the customer to give the driver (created once, when the order goes out)
+        ...(status === 'OUT_FOR_DELIVERY' && order.deliveryOptionId !== 'pickup' && !order.deliveryCode
+          ? { deliveryCode: String(randomInt(1000, 10000)), deliveryCodeTries: 0 }
+          : {}),
+      },
     });
     if (res.count === 0) throw conflict('This order was just updated by someone else', 'STALE');
     if (status === 'CANCELLED') {

@@ -209,6 +209,16 @@ if (bot) {
       else await changeStatus(orderId!, action as OrderStatus, actorId, undefined);
       await ctx.answerCallbackQuery({ text: '✅ Done' });
       await refreshAdminCards(orderId!, `Last action by ${who}`);
+      const { logActivity } = await import('../admin/activity');
+      const o = await prisma.order.findUnique({ where: { id: orderId }, select: { orderNumber: true } });
+      void logActivity({
+        actorId,
+        actorName: actor?.fullName ?? who,
+        action: action === 'verify' || action === 'reject' ? 'order.payment' : 'order.status',
+        summary: `${o?.orderNumber ?? 'Order'} → ${action === 'verify' ? 'payment confirmed' : action === 'reject' ? 'payment rejected' : String(action).toLowerCase().replace(/_/g, ' ')} (Telegram)`,
+        entity: 'order',
+        entityId: orderId,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed';
       const stale = (err as { code?: string }).code === 'STALE';

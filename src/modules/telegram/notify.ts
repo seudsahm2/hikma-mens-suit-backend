@@ -167,7 +167,20 @@ function customerMessage(o: FullOrder, kind: OrderEventKind): string | null {
         CANCELLED: [`✖️ Order ${n} was cancelled.`, `✖️ ትዕዛዝ ${n} ተሰርዟል።`],
       };
       const pair = map[o.status];
-      return pair ? (am ? pair[1] : pair[0]) : null;
+      if (!pair) return null;
+      // On the way: the delivery code the customer gives the driver (only the customer gets it)
+      if (o.status === 'OUT_FOR_DELIVERY' && o.deliveryCode) {
+        return am
+          ? `${pair[1]}
+
+🔐 የማድረሻ ኮድ: <b>${o.deliveryCode}</b>
+ዕቃውን ሲቀበሉ ብቻ ለአድራሹ ይንገሩት።`
+          : `${pair[0]}
+
+🔐 Delivery code: <b>${o.deliveryCode}</b>
+Give it to the delivery person only when you have the items.`;
+      }
+      return am ? pair[1] : pair[0];
     }
     default:
       return null;
@@ -179,10 +192,11 @@ async function sendCustomerMessage(o: FullOrder, kind: OrderEventKind) {
   const text = customerMessage(o, kind);
   if (!text) return;
   const am = o.user?.languageCode === 'am';
-  await bot.api.sendMessage(o.telegramChatId.toString(), text, {
-    parse_mode: 'HTML',
-    reply_markup: new InlineKeyboard().webApp(am ? 'ትዕዛዙን ይመልከቱ' : 'View order', shopUrl(`/orders/${o.orderNumber}`)),
-  });
+  const kb = new InlineKeyboard();
+  // Backup confirmation: the customer can confirm receipt themselves
+  if (kind === 'status' && o.status === 'OUT_FOR_DELIVERY' && o.deliveryCode) kb.text(am ? '✅ ተቀብያለሁ' : '✅ I received it', `rc:${o.id}`).row();
+  kb.webApp(am ? 'ትዕዛዙን ይመልከቱ' : 'View order', shopUrl(`/orders/${o.orderNumber}`));
+  await bot.api.sendMessage(o.telegramChatId.toString(), text, { parse_mode: 'HTML', reply_markup: kb });
 }
 
 /**
