@@ -206,6 +206,7 @@ if (bot) {
       const actorId = actor && actor.role !== 'CUSTOMER' ? actor.id : null;
       if (action === 'verify') await reviewPayment(orderId!, actorId, { approve: true });
       else if (action === 'reject') await reviewPayment(orderId!, actorId, { approve: false });
+      else if (action === 'DELIVERED') throw Object.assign(new Error('Delivery is confirmed with the customer’s code (driver) — or in the admin'), { code: 'NEEDS_CODE' });
       else await changeStatus(orderId!, action as OrderStatus, actorId, undefined);
       await ctx.answerCallbackQuery({ text: '✅ Done' });
       await refreshAdminCards(orderId!, `Last action by ${who}`);

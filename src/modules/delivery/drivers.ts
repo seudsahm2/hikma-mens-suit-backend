@@ -64,7 +64,7 @@ async function sendDriverCard(orderId: string) {
 async function markDelivered(orderId: string, note: string) {
   const { changeStatus } = await import('../orders/orders.service');
   const { refreshAdminCards } = await import('../telegram/notify');
-  await changeStatus(orderId, 'DELIVERED', null, note);
+  await changeStatus(orderId, 'DELIVERED', null, note, { trusted: true }); // driver typed the code / customer confirmed
   await refreshAdminCards(orderId).catch(() => undefined);
 }
 

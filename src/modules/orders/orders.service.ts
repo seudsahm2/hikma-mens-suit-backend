@@ -407,7 +407,21 @@ const STATUS_MESSAGES: Record<OrderStatus, string> = {
   CANCELLED: 'Order cancelled',
 };
 
-export async function changeStatus(orderId: string, status: OrderStatus, actorId: string | null, note?: string) {
+export const DELIVERY_CODE_TRIES = 5;
+
+/**
+ * How a delivery may be confirmed. The driver's code entry and the customer's own "I received it"
+ * are `trusted`. Staff must give the customer's code, or a written override (reason + the last 4
+ * characters of the order number) — so a misclick can never mark an order delivered.
+ */
+export interface DeliveryProof {
+  trusted?: boolean;
+  code?: string;
+  overrideReason?: string;
+  overrideConfirm?: string;
+}
+
+export async function changeStatus(orderId: string, status: OrderStatus, actorId: string | null, note?: string, proof: DeliveryProof = {}) {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true } });
   if (!order) throw notFound('Order not found');
   if (order.status === status) throw conflict(`This order is already ${STATUS_LABEL[status]}`, 'STALE');
@@ -418,6 +432,31 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
         : `This order is already ${STATUS_LABEL[order.status]} — it can’t go back to ${STATUS_LABEL[status]}`,
       'STALE',
     );
+  }
+
+  let override = false;
+  if (status === 'DELIVERED' && !proof.trusted) {
+    const typed = (proof.code ?? '').replace(/\D/g, '');
+    if (typed) {
+      if (!order.deliveryCode) throw conflict('This order has no delivery code yet — send it out first, or use “without code”', 'NO_CODE');
+      if (order.deliveryCodeTries >= DELIVERY_CODE_TRIES) throw conflict('Too many wrong codes — use “without code” with a reason', 'CODE_LOCKED');
+      if (typed !== order.deliveryCode) {
+        const tries = order.deliveryCodeTries + 1;
+        await prisma.order.update({ where: { id: order.id }, data: { deliveryCodeTries: tries } });
+        throw badRequest(`Wrong code — ${Math.max(0, DELIVERY_CODE_TRIES - tries)} tries left. Ask the customer again.`, 'WRONG_CODE');
+      }
+      note = note || 'Delivered · customer’s code confirmed by staff';
+    } else if (proof.overrideReason !== undefined) {
+      const reason = proof.overrideReason.trim();
+      if (reason.length < 10) throw badRequest('Write why (at least 10 characters)', 'REASON');
+      if ((proof.overrideConfirm ?? '').trim().toUpperCase() !== order.orderNumber.slice(-4).toUpperCase()) {
+        throw badRequest(`Type the last 4 characters of the order number (${order.orderNumber}) to confirm`, 'CONFIRM');
+      }
+      note = `Marked delivered without the customer’s code — ${reason}`;
+      override = true;
+    } else {
+      throw conflict('Confirm delivery with the customer’s 4-digit code (or “without code” with a reason)', 'DELIVERY_CODE_REQUIRED');
+    }
   }
 
   const delivered = status === 'DELIVERED' || status === 'PICKED_UP';
@@ -450,6 +489,18 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
     return tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   });
   notifyOrderEvent(orderId, 'status');
+  // Delivered without the customer's code: tell the customer, so a mistake is noticed right away
+  if (override && order.telegramChatId) {
+    void import('../telegram/bot').then(({ bot, shopUrl }) =>
+      bot?.api
+        .sendMessage(
+          order.telegramChatId!.toString(),
+          `ℹ️ ${order.orderNumber} was marked as delivered by the shop. Didn’t receive it? Tell us right away.`,
+          { reply_markup: { inline_keyboard: [[{ text: '🆘 I didn’t receive it', web_app: { url: shopUrl(`/orders/${order.orderNumber}?help=1`) } }]] } },
+        )
+        .catch(() => undefined),
+    );
+  }
   if (status === 'CANCELLED') {
     onStockRestored(order.items.map((i) => i.variantId));
     safely(() => onOrderCancelled(orderId), 'credit refund');

@@ -47,6 +47,7 @@ function adminCardText(o: FullOrder, footer?: string) {
     `<b>Due now:</b> ${birr(o.amountDue)}${o.isDeposit ? ' (deposit)' : ''}`,
     `<b>Payment:</b> ${escapeHtml(o.paymentLabel ?? '-')} — ${PAYMENT_LABEL[o.paymentStatus]}`,
     o.transactionRef ? `<b>Ref:</b> <code>${escapeHtml(o.transactionRef)}</code>` : '',
+    o.status === 'OUT_FOR_DELIVERY' && o.deliveryOptionId !== 'pickup' ? '🔐 Becomes delivered when the customer’s code is confirmed' : '',
     '',
     `👤 ${escapeHtml(o.customerName)} · <a href="tel:${o.customerPhone}">${o.customerPhone}</a>${
       o.user?.telegramUsername ? ` · @${escapeHtml(o.user.telegramUsername)}` : ''
@@ -76,7 +77,8 @@ function adminKeyboard(o: FullOrder) {
     DELIVERED: '🏁 Delivered',
     PICKED_UP: '🏁 Picked up',
   };
-  for (const step of nextSteps(o.status, o.deliveryOptionId === 'pickup')) kb.text(labels[step]!, `o:${id}:${step}`);
+  // "Delivered" is never a one-tap button: it needs the customer's code (driver) or the admin's confirmation
+  for (const step of nextSteps(o.status, o.deliveryOptionId === 'pickup').filter((s) => s !== 'DELIVERED')) kb.text(labels[step]!, `o:${id}:${step}`);
   kb.row().text('✖️ Cancel', `o:${id}:CANCELLED`);
   return kb;
 }

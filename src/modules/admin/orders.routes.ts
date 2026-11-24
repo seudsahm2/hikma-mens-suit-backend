@@ -75,9 +75,19 @@ adminOrdersRouter.get(
 
 adminOrdersRouter.patch(
   '/:id/status',
-  validate(z.object({ status: z.enum(STATUSES), note: z.string().trim().max(300).optional() })),
+  validate(
+    z.object({
+      status: z.enum(STATUSES),
+      note: z.string().trim().max(300).optional(),
+      // Delivered: the customer's code, or a written override
+      code: z.string().trim().max(10).optional(),
+      overrideReason: z.string().max(300).optional(),
+      overrideConfirm: z.string().max(10).optional(),
+    }),
+  ),
   ah(async (req, res) => {
-    const order = await changeStatus(req.params.id!, req.body.status, req.user!.id, req.body.note);
+    const { code, overrideReason, overrideConfirm } = req.body as { code?: string; overrideReason?: string; overrideConfirm?: string };
+    const order = await changeStatus(req.params.id!, req.body.status, req.user!.id, req.body.note, { code, overrideReason, overrideConfirm });
     res.json({ order: serializeOrder(order, { staff: true }) });
   }),
 );

@@ -32,7 +32,17 @@ async function describe(method: string, path: string, body: Record<string, unkno
   const p = path.replace(/\?.*$/, '').replace(/\/+$/, '');
   let m: RegExpMatchArray | null;
 
-  if ((m = p.match(/^\/orders\/([^/]+)\/status$/))) return { action: 'order.status', summary: `${await orderNo(m[1]!)} → ${STATUS_LABEL[body.status as keyof typeof STATUS_LABEL] ?? body.status}`, entity: 'order', entityId: m[1] };
+  if ((m = p.match(/^\/orders\/([^/]+)\/status$/))) {
+    const how =
+      body.status === 'DELIVERED'
+        ? body.overrideReason
+          ? ` ⚠️ WITHOUT the customer’s code — “${String(body.overrideReason).trim().slice(0, 120)}”`
+          : body.code
+            ? ' (customer’s code confirmed)'
+            : ''
+        : '';
+    return { action: body.overrideReason ? 'order.delivered_override' : 'order.status', summary: `${await orderNo(m[1]!)} → ${STATUS_LABEL[body.status as keyof typeof STATUS_LABEL] ?? body.status}${how}`, entity: 'order', entityId: m[1] };
+  }
   if ((m = p.match(/^\/orders\/([^/]+)\/payment$/)))
     return {
       action: 'order.payment',
