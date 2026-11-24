@@ -66,10 +66,34 @@ if (bot) {
     }
 
     const path = startParamToPath(payload || undefined);
-    await ctx.reply(am ? 'እንኳን ወደ Hikma Men’s Fashion በደህና መጡ።' : 'Welcome to Hikma Men’s Fashion.', {
-      reply_markup: new InlineKeyboard().webApp(am ? '🛍  ሱቁን ይክፈቱ' : '🛍  Open the shop', shopUrl(path)),
-    });
+    const user = ctx.from ? await prisma.user.findUnique({ where: { telegramId: BigInt(ctx.from.id) } }) : null;
+    const kb = new InlineKeyboard().webApp(am ? '🛍  ሱቁን ይክፈቱ' : '🛍  Open the shop', shopUrl(path));
+    if (!user?.newsOptIn) kb.row().text(am ? '🔔  አዲስ ዕቃ ሲገባ ንገሩኝ' : '🔔  Tell me about new arrivals', 'news:on');
+    await ctx.reply(am ? 'እንኳን ወደ Hikma Men’s Fashion በደህና መጡ።' : 'Welcome to Hikma Men’s Fashion.', { reply_markup: kb });
   });
+
+  // New-arrival announcements: opt in / out (button, /news, /stop)
+  const setNews = async (ctx: Context, on: boolean) => {
+    if (!ctx.from) return;
+    const { setNewsOptIn } = await import('./broadcast'); // lazy: avoids a circular import
+    await setNewsOptIn(ctx.from, on);
+    const am = isAm(ctx);
+    const text = on
+      ? am
+        ? '✅ አዲስ ዕቃ ሲገባ እናሳውቅዎታለን። ለማቆም /stop'
+        : '✅ You’ll get a message when new items arrive. Turn off anytime: /stop'
+      : am
+        ? 'የአዲስ ዕቃ መልዕክቶች ቆመዋል። እንደገና ለመጀመር /news'
+        : 'New-arrival messages are off. Turn them back on: /news';
+    if (ctx.callbackQuery) {
+      await ctx.answerCallbackQuery({ text: on ? '✅' : 'OK' });
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
+    }
+    await ctx.reply(text);
+  };
+  bot.callbackQuery('news:on', (ctx) => setNews(ctx, true));
+  bot.command('news', (ctx) => (ctx.chat.type === 'private' ? setNews(ctx, true) : undefined));
+  bot.command('stop', (ctx) => (ctx.chat.type === 'private' ? setNews(ctx, false) : undefined));
 
   bot.command('orders', async (ctx) => {
     if (ctx.chat.type !== 'private' || !ctx.from) return;
@@ -159,19 +183,22 @@ if (bot) {
     const [, orderId, action] = ctx.match;
     const actor = ctx.from ? await prisma.user.findUnique({ where: { telegramId: BigInt(ctx.from.id) } }) : null;
     const who = ctx.from?.first_name ?? 'Admin';
+    // Imported lazily to avoid a circular import (orders.service → notify → bot)
+    const { changeStatus, reviewPayment } = await import('../orders/orders.service');
+    const { refreshAdminCards } = await import('./notify');
     try {
-      // Imported lazily to avoid a circular import (orders.service → notify → bot)
-      const { changeStatus, reviewPayment } = await import('../orders/orders.service');
       const actorId = actor && actor.role !== 'CUSTOMER' ? actor.id : null;
       if (action === 'verify') await reviewPayment(orderId!, actorId, { approve: true });
       else if (action === 'reject') await reviewPayment(orderId!, actorId, { approve: false });
       else await changeStatus(orderId!, action as OrderStatus, actorId, undefined);
       await ctx.answerCallbackQuery({ text: '✅ Done' });
-      const { refreshAdminCard } = await import('./notify');
-      await refreshAdminCard(orderId!, ctx, who);
+      await refreshAdminCards(orderId!, `Last action by ${who}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed';
-      await ctx.answerCallbackQuery({ text: message.slice(0, 190), show_alert: true });
+      const stale = (err as { code?: string }).code === 'STALE';
+      // A stale button (order already changed elsewhere): explain briefly and fix the card
+      await ctx.answerCallbackQuery({ text: stale ? `ℹ️ ${message}` : message.slice(0, 190), show_alert: !stale });
+      if (stale) await refreshAdminCards(orderId!);
     }
   });
 }

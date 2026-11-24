@@ -36,12 +36,66 @@ model User {
   city             String?
   area             String?
   landmark         String?
+  /// Opted in to new-arrival announcements on Telegram
+  newsOptIn        Boolean  @default(false)
+  newsOptInAt      DateTime?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   orders      Order[]
   orderEvents OrderEvent[]
   stockMoves  StockMovement[]
+  stockAlerts StockAlert[]
+}
+
+/// "Notify me when back": one row per customer per sold-out size/colour.
+model StockAlert {
+  id         String    @id @default(cuid())
+  userId     String
+  variantId  String
+  createdAt  DateTime  @default(now())
+  notifiedAt DateTime?
+
+  user    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, variantId])
+  @@index([variantId, notifiedAt])
+}
+
+/// New-arrival announcement sent by the bot to opted-in customers. Sent in batches by a worker
+/// (resumable via `cursor`), so a restart mid-send continues where it stopped.
+model Broadcast {
+  id          String    @id @default(cuid())
+  productId   String
+  createdById String?
+  /// sending | done | cancelled
+  status      String    @default("sending")
+  cursor      String?
+  total       Int       @default(0)
+  sentCount   Int       @default(0)
+  failedCount Int       @default(0)
+  createdAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+/// Telegram order cards sent to the order-alerts chat. Tracked so that any change to the order —
+/// from the dashboard, the bot or automation — updates every card (status text + valid buttons only).
+model AdminCard {
+  id        String   @id @default(cuid())
+  orderId   String
+  chatId    String
+  messageId Int
+  hasPhoto  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
 }
 
 // ─── Catalog ─────────────────────────────────────────────
@@ -120,6 +174,7 @@ model Product {
   brand    Brand?           @relation(fields: [brandId], references: [id])
   images   ProductImage[]
   variants ProductVariant[]
+  broadcasts Broadcast[]
 
   @@index([status, categoryId])
   @@index([createdAt])
@@ -155,6 +210,7 @@ model ProductVariant {
   product    Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
   orderItems OrderItem[]
   stockMoves StockMovement[]
+  alerts     StockAlert[]
 
   @@unique([productId, size, color])
 }
@@ -215,12 +271,15 @@ model Order {
   paymentStatus    PaymentStatus @default(UNPAID)
   status           OrderStatus   @default(PENDING)
   note             String?
+  /// Result of the last automatic payment check or a duplicate-reference warning (shown to staff)
+  paymentCheck     String?
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
   user   User?        @relation(fields: [userId], references: [id])
   items  OrderItem[]
   events OrderEvent[]
+  cards  AdminCard[]
 
   @@index([status, createdAt])
   @@index([userId, createdAt])
@@ -372,6 +431,10 @@ model Settings {
   // Telegram
   /// New posts in the linked channel become draft products
   channelAutoImport    Boolean  @default(true)
+  /// Automatic payment checking (ShegerPay). Off by default: payments are confirmed manually.
+  autoVerifyPayments   Boolean  @default(false)
+  /// Provider API key set by the owner (falls back to SHEGERPAY_API_KEY). Never sent to the browser.
+  paymentVerifyKey     String?
   channelChatId        String?
   adminChatId          String?
   updatedAt            DateTime @updatedAt

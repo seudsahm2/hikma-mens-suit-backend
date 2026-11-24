@@ -6,6 +6,9 @@ import { imageUrls } from '../../lib/storage';
 import { getSettings } from '../settings/settings.service';
 import { canAutoVerify, verifyTransaction } from '../payments/shegerpay';
 import { notifyOrderEvent } from '../telegram/notify';
+import { onStockRestored } from '../alerts/backInStock';
+import { canMoveTo, isFinalStatus, STATUS_LABEL } from './rules';
+export { canMoveTo, isFinalStatus, STATUS_LABEL } from './rules';
 
 // ─── Serialisation ───────────────────────────────────────
 
@@ -55,7 +58,7 @@ export function serializeOrder(o: OrderWithRelations, opts: { staff?: boolean } 
       quantity: i.quantity,
       ...(opts.staff ? { costPrice: i.costPrice } : {}),
     })),
-    ...(opts.staff ? { costTotal: o.costTotal, profit: o.total - (o.deliveryFee ?? 0) - o.costTotal } : {}),
+    ...(opts.staff ? { costTotal: o.costTotal, profit: o.total - (o.deliveryFee ?? 0) - o.costTotal, paymentCheck: o.paymentCheck } : {}),
     events: o.events
       ?.filter((e) => opts.staff || !e.type.startsWith('internal'))
       .map((e) => ({ id: e.id, type: e.type, message: e.message, createdAt: e.createdAt })),
@@ -207,7 +210,17 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
   return order;
 }
 
+// Lifecycle rules live in ./rules (shared with the Telegram cards)
+
 // ─── Payment ─────────────────────────────────────────────
+
+/** Another active order already used this transaction number? (Same receipt sent twice = fraud risk.) */
+async function findDuplicateReference(orderId: string, ref: string) {
+  return prisma.order.findFirst({
+    where: { id: { not: orderId }, transactionRef: { equals: ref, mode: 'insensitive' }, status: { not: 'CANCELLED' } },
+    select: { orderNumber: true },
+  });
+}
 
 export async function submitPayment(orderId: string, input: { transactionRef?: string; proofKey?: string }) {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
@@ -220,32 +233,51 @@ export async function submitPayment(orderId: string, input: { transactionRef?: s
   let amountPaid = order.amountPaid;
   let status: OrderStatus = order.status;
   let message = 'Payment proof submitted';
+  let paymentCheck: string | null = null;
 
-  if (input.transactionRef && canAutoVerify(order.paymentMethodId)) {
+  const ref = input.transactionRef?.trim().toUpperCase();
+  const duplicate = ref ? await findDuplicateReference(orderId, ref) : null;
+
+  if (duplicate) {
+    // Never auto-approve a reused receipt; staff decide
+    paymentCheck = `⚠️ This transaction number was already used on ${duplicate.orderNumber}`;
+  } else if (ref) {
     const settings = await getSettings();
-    const result = await verifyTransaction({
-      paymentMethodId: order.paymentMethodId!,
-      transactionRef: input.transactionRef,
-      amount: order.amountDue,
-      merchantName: settings.storeName,
-    });
-    if (result.verified) {
-      amountPaid = result.amount ?? order.amountDue;
-      paymentStatus = amountPaid >= order.total ? 'PAID' : 'PARTIAL';
-      status = order.status === 'PENDING' ? 'CONFIRMED' : order.status;
-      message = 'Payment verified automatically';
+    if (canAutoVerify(settings, order.paymentMethodId)) {
+      const result = await verifyTransaction({
+        apiKey: settings.paymentVerifyKey,
+        paymentMethodId: order.paymentMethodId!,
+        transactionRef: ref,
+        amount: order.amountDue,
+        merchantName: settings.storeName,
+      });
+      if (result.verified) {
+        amountPaid = Math.min(order.total, result.amount ?? order.amountDue);
+        paymentStatus = amountPaid >= order.total ? 'PAID' : 'PARTIAL';
+        status = order.status === 'PENDING' ? 'CONFIRMED' : order.status;
+        message = 'Payment verified automatically';
+        paymentCheck = `🤖 Verified automatically (${amountPaid.toLocaleString('en-US')} ETB)`;
+      } else {
+        paymentCheck = `🤖 Not verified automatically${result.message ? `: ${result.message}` : ''} — please check by hand`;
+      }
     }
   }
 
   const updated = await prisma.order.update({
     where: { id: orderId },
     data: {
-      transactionRef: input.transactionRef ?? order.transactionRef,
+      transactionRef: ref ?? order.transactionRef,
       paymentProofKey: input.proofKey ?? order.paymentProofKey,
       paymentStatus,
       amountPaid,
       status,
-      events: { create: { type: paymentStatus === 'SUBMITTED' ? 'payment_submitted' : 'payment_verified', message } },
+      paymentCheck,
+      events: {
+        create: [
+          { type: paymentStatus === 'SUBMITTED' ? 'payment_submitted' : 'payment_verified', message },
+          ...(paymentCheck ? [{ type: 'internal_payment_check', message: paymentCheck }] : []),
+        ],
+      },
     },
     include: orderInclude,
   });
@@ -253,45 +285,46 @@ export async function submitPayment(orderId: string, input: { transactionRef?: s
   return updated;
 }
 
-/** Staff confirms (or rejects) a submitted payment. */
+/** Staff confirms (or rejects) a payment. */
 export async function reviewPayment(orderId: string, actorId: string | null, input: { approve: boolean; amountPaid?: number; reason?: string }) {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order) throw notFound('Order not found');
-  if (order.status === 'CANCELLED') throw conflict('This order was cancelled', 'CANCELLED');
+  if (order.status === 'CANCELLED') throw conflict('This order was cancelled', 'STALE');
+  if (order.paymentStatus === 'PAID') throw conflict('Payment is already confirmed', 'STALE');
 
   if (!input.approve) {
-    const updated = await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        paymentStatus: 'REJECTED',
-        events: { create: { type: 'payment_rejected', message: input.reason || 'Payment could not be confirmed', actorId } },
-      },
-      include: orderInclude,
+    if (order.paymentStatus === 'PARTIAL') throw conflict('A deposit was already confirmed — cancel the order instead', 'STALE');
+    const res = await prisma.order.updateMany({
+      where: { id: orderId, paymentStatus: order.paymentStatus },
+      data: { paymentStatus: 'REJECTED' },
+    });
+    if (res.count === 0) throw conflict('This order was just updated by someone else', 'STALE');
+    await prisma.orderEvent.create({
+      data: { orderId, type: 'payment_rejected', message: input.reason || 'Payment could not be confirmed', actorId },
     });
     notifyOrderEvent(orderId, 'payment_rejected');
-    return updated;
+    return prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   }
 
   const amountPaid = Math.min(order.total, input.amountPaid ?? Math.max(order.amountDue, order.amountPaid));
+  if (amountPaid <= order.amountPaid && order.paymentStatus === 'PARTIAL') throw conflict('This deposit is already confirmed', 'STALE');
   const paymentStatus = amountPaid >= order.total ? 'PAID' : 'PARTIAL';
-  const updated = await prisma.order.update({
-    where: { id: orderId },
+  // Conditional update: if two people act at once, only the first one wins
+  const res = await prisma.order.updateMany({
+    where: { id: orderId, paymentStatus: order.paymentStatus, status: order.status },
+    data: { amountPaid, paymentStatus, status: order.status === 'PENDING' ? 'CONFIRMED' : order.status },
+  });
+  if (res.count === 0) throw conflict('This order was just updated by someone else', 'STALE');
+  await prisma.orderEvent.create({
     data: {
-      amountPaid,
-      paymentStatus,
-      status: order.status === 'PENDING' ? 'CONFIRMED' : order.status,
-      events: {
-        create: {
-          type: 'payment_verified',
-          message: paymentStatus === 'PAID' ? 'Payment confirmed' : `Deposit of ${amountPaid.toLocaleString()} ETB confirmed`,
-          actorId,
-        },
-      },
+      orderId,
+      type: 'payment_verified',
+      message: paymentStatus === 'PAID' ? 'Payment confirmed' : `Deposit of ${amountPaid.toLocaleString('en-US')} ETB confirmed`,
+      actorId,
     },
-    include: orderInclude,
   });
   notifyOrderEvent(orderId, 'payment_verified');
-  return updated;
+  return prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
 }
 
 // ─── Status ──────────────────────────────────────────────
@@ -309,13 +342,25 @@ const STATUS_MESSAGES: Record<OrderStatus, string> = {
 export async function changeStatus(orderId: string, status: OrderStatus, actorId: string | null, note?: string) {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true } });
   if (!order) throw notFound('Order not found');
-  if (order.status === status) return prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
-  if (order.status === 'CANCELLED') throw conflict('Cancelled orders cannot be changed', 'CANCELLED');
-  if (status === 'CANCELLED' && (order.status === 'DELIVERED' || order.status === 'PICKED_UP')) {
-    throw conflict('Completed orders cannot be cancelled', 'COMPLETED');
+  if (order.status === status) throw conflict(`This order is already ${STATUS_LABEL[status]}`, 'STALE');
+  if (!canMoveTo(order.status, status)) {
+    throw conflict(
+      isFinalStatus(order.status)
+        ? `This order is already ${STATUS_LABEL[order.status]} — it can’t be changed`
+        : `This order is already ${STATUS_LABEL[order.status]} — it can’t go back to ${STATUS_LABEL[status]}`,
+      'STALE',
+    );
   }
 
+  const delivered = status === 'DELIVERED' || status === 'PICKED_UP';
   const updated = await prisma.$transaction(async (tx) => {
+    // Conditional on the status we read: two simultaneous clicks can't both apply
+    const res = await tx.order.updateMany({
+      where: { id: orderId, status: order.status },
+      // Balance is collected on delivery / at pickup
+      data: { status, ...(delivered ? { amountPaid: order.total, paymentStatus: 'PAID' } : {}) },
+    });
+    if (res.count === 0) throw conflict('This order was just updated by someone else', 'STALE');
     if (status === 'CANCELLED') {
       for (const item of order.items) {
         await tx.productVariant.update({ where: { id: item.variantId }, data: { stock: { increment: item.quantity } } });
@@ -324,19 +369,13 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
         data: order.items.map((i) => ({ variantId: i.variantId, delta: i.quantity, reason: 'CANCEL' as const, orderId, actorId })),
       });
     }
-    const delivered = status === 'DELIVERED' || status === 'PICKED_UP';
-    return tx.order.update({
-      where: { id: orderId },
-      data: {
-        status,
-        // Balance is collected on delivery / at pickup
-        ...(delivered ? { amountPaid: order.total, paymentStatus: 'PAID' } : {}),
-        events: { create: { type: `status_${status.toLowerCase()}`, message: note || STATUS_MESSAGES[status], actorId } },
-      },
-      include: orderInclude,
+    await tx.orderEvent.create({
+      data: { orderId, type: `status_${status.toLowerCase()}`, message: note || STATUS_MESSAGES[status], actorId },
     });
+    return tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   });
   notifyOrderEvent(orderId, 'status');
+  if (status === 'CANCELLED') onStockRestored(order.items.map((i) => i.variantId));
   return updated;
 }
 

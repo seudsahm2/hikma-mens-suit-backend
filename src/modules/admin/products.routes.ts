@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
+import { onStockRestored } from '../alerts/backInStock';
 import { ah, badRequest, notFound } from '../../lib/http';
 import { randomSuffix, slugify } from '../../lib/slug';
 import { deleteImage, saveImage } from '../../lib/storage';
@@ -9,6 +10,7 @@ import { imageUpload } from '../../middleware/upload';
 import { validate } from '../../middleware/validate';
 import { serializeCategory, serializeImage } from '../catalog/serialize';
 import { previewCaption, publishToChannel } from '../telegram/publish';
+import { startBroadcast, subscriberCount } from '../telegram/broadcast';
 
 export const adminProductsRouter = Router();
 
@@ -16,7 +18,11 @@ const include = {
   category: true,
   brand: true,
   images: { orderBy: { sortOrder: 'asc' } },
-  variants: { orderBy: [{ color: 'asc' }, { size: 'asc' }] },
+  variants: {
+    orderBy: [{ color: 'asc' }, { size: 'asc' }],
+    // how many customers are waiting for each sold-out size ("Notify me when back")
+    include: { _count: { select: { alerts: { where: { notifiedAt: null } } } } },
+  },
 } satisfies Prisma.ProductInclude;
 
 type AdminProduct = Prisma.ProductGetPayload<{ include: typeof include }>;
@@ -266,6 +272,8 @@ adminProductsRouter.put(
     });
 
     const p = await prisma.product.findUniqueOrThrow({ where: { id: productId }, include });
+    // Anyone waiting for a size that now has stock gets a Telegram message
+    onStockRestored(p.variants.filter((v) => v.stock > 0).map((v) => v.id));
     res.json({ product: serializeAdminProduct(p) });
   }),
 );
@@ -344,5 +352,28 @@ adminProductsRouter.post(
   validate(z.object({ caption: z.string().max(1024).optional() })),
   ah(async (req, res) => {
     res.json(await publishToChannel(req.params.id!, req.body.caption));
+  }),
+);
+
+// ─── New-arrival announcement ────────────────────────────
+
+/** Subscriber count and the latest announcement of this product. */
+adminProductsRouter.get(
+  '/:id/announce',
+  ah(async (req, res) => {
+    const [subscribers, last] = await Promise.all([
+      subscriberCount(),
+      prisma.broadcast.findFirst({ where: { productId: req.params.id }, orderBy: { createdAt: 'desc' } }),
+    ]);
+    res.json({ subscribers, last });
+  }),
+);
+
+adminProductsRouter.post(
+  '/:id/announce',
+  validate(z.object({ force: z.boolean().default(false) })),
+  ah(async (req, res) => {
+    const broadcast = await startBroadcast(req.params.id!, req.user!.id, req.body.force);
+    res.status(201).json({ broadcast });
   }),
 );

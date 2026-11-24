@@ -44,6 +44,7 @@ export function publicUser(u: User) {
     city: u.city,
     area: u.area,
     landmark: u.landmark,
+    newsOptIn: u.newsOptIn,
   };
 }
 
@@ -199,10 +200,11 @@ authRouter.patch(
       city: z.string().trim().max(60).optional(),
       area: z.string().trim().max(80).optional(),
       landmark: z.string().trim().max(160).optional(),
+      newsOptIn: z.boolean().optional(),
     }),
   ),
   ah(async (req, res) => {
-    const { phone, ...rest } = req.body as { phone?: string } & Record<string, string | undefined>;
+    const { phone, newsOptIn, ...rest } = req.body as { phone?: string; newsOptIn?: boolean } & Record<string, string | undefined>;
     let normalized: string | undefined;
     if (phone !== undefined && req.user!.role === 'CUSTOMER') {
       const p = normalizeEthiopianPhone(phone);
@@ -211,7 +213,11 @@ authRouter.patch(
     }
     const user = await prisma.user.update({
       where: { id: req.user!.id },
-      data: { ...rest, ...(normalized ? { phone: normalized } : {}) },
+      data: {
+        ...rest,
+        ...(normalized ? { phone: normalized } : {}),
+        ...(newsOptIn !== undefined ? { newsOptIn, newsOptInAt: newsOptIn ? new Date() : null } : {}),
+      },
     });
     res.json({ user: publicUser(user) });
   }),

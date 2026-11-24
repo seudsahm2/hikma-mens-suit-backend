@@ -18,6 +18,7 @@ import { adminOrdersRouter } from './modules/admin/orders.routes';
 import { adminStoreRouter } from './modules/admin/store.routes';
 import { telegramWebhook } from './modules/telegram/bot';
 import { geoRouter } from './modules/geo/geo.routes';
+import { alertsRouter } from './modules/alerts/alerts.routes';
 
 installBigIntJson();
 
@@ -74,6 +75,7 @@ export function createApp() {
   app.use('/api/geo', geoRouter);
   app.use('/api', catalogRouter);
   app.use('/api/orders', ordersRouter);
+  app.use('/api/alerts', alertsRouter);
   app.use('/api/admin/products', requireStaff, adminProductsRouter);
   app.use('/api/admin/orders', requireStaff, adminOrdersRouter);
   app.use('/api/admin', requireStaff, adminStoreRouter);

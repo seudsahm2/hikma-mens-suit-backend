@@ -55,12 +55,16 @@ async function main() {
     { command: 'start', description: 'Open the shop' },
     { command: 'orders', description: 'My orders' },
     { command: 'help', description: 'Contact & address' },
+    { command: 'news', description: 'New arrivals on' },
+    { command: 'stop', description: 'New arrivals off' },
   ]);
   await bot.api.setMyCommands(
     [
       { command: 'start', description: 'ሱቁን ይክፈቱ' },
       { command: 'orders', description: 'የኔ ትዕዛዞች' },
       { command: 'help', description: 'ስልክ እና አድራሻ' },
+      { command: 'news', description: 'የአዲስ ዕቃ መልዕክት ጀምር' },
+      { command: 'stop', description: 'የአዲስ ዕቃ መልዕክት አቁም' },
     ],
     { language_code: 'am' },
   );

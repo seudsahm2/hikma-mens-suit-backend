@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { env } from '../../config/env';
 import { prisma } from '../../lib/prisma';
+import { onStockRestored } from '../alerts/backInStock';
 import { ah, badRequest, conflict, notFound } from '../../lib/http';
 import { normalizeEthiopianPhone } from '../../lib/phone';
 import { slugify } from '../../lib/slug';
@@ -12,7 +13,9 @@ import { imageUpload, videoUpload } from '../../middleware/upload';
 import { validate } from '../../middleware/validate';
 import { publicUser } from '../auth/auth.routes';
 import { serializeCategory } from '../catalog/serialize';
+import type { Settings } from '@prisma/client';
 import { getSettings } from '../settings/settings.service';
+import { AUTO_VERIFY_PROVIDERS } from '../payments/shegerpay';
 import { bot } from '../telegram/bot';
 import { createLinkCode } from '../telegram/linkCodes';
 
@@ -122,6 +125,7 @@ adminStoreRouter.post(
       await tx.stockMovement.create({ data: { variantId, delta, reason: delta > 0 ? 'RESTOCK' : 'ADJUST', actorId: req.user!.id } });
       return tx.productVariant.update({ where: { id: variantId }, data: { stock: { increment: delta } } });
     });
+    if (delta > 0) onStockRestored([variantId]);
     res.json({ variant });
   }),
 );
@@ -240,6 +244,41 @@ adminStoreRouter.delete(
 
 // ─── Settings (owner only) ───────────────────────────────
 
+/** Settings as the owner sees them: the payment provider key is never sent back, only whether it's set. */
+function ownerSettings(s: Settings) {
+  const { paymentVerifyKey, ...rest } = s;
+  return {
+    ...rest,
+    paymentVerifyKeySet: Boolean(paymentVerifyKey),
+    paymentVerifyServerKey: !paymentVerifyKey && Boolean(env.SHEGERPAY_API_KEY),
+    autoVerifyMethods: Object.keys(AUTO_VERIFY_PROVIDERS),
+  };
+}
+
+/** Automatic payment checking: on/off and the owner's ShegerPay key. Off by default (manual). */
+adminStoreRouter.put(
+  '/settings/payment-verification',
+  requireOwner,
+  validate(
+    z.object({
+      enabled: z.boolean(),
+      // undefined = keep, '' = remove, string = replace
+      apiKey: z.string().trim().max(200).optional(),
+    }),
+  ),
+  ah(async (req, res) => {
+    const current = await getSettings();
+    const { enabled, apiKey } = req.body as { enabled: boolean; apiKey?: string };
+    const nextKey = apiKey === undefined ? current.paymentVerifyKey : apiKey || null;
+    if (enabled && !nextKey && !env.SHEGERPAY_API_KEY) throw badRequest('Add the ShegerPay API key to turn on automatic checking', 'KEY_REQUIRED');
+    const settings = await prisma.settings.update({
+      where: { id: 'default' },
+      data: { autoVerifyPayments: enabled, paymentVerifyKey: nextKey },
+    });
+    res.json({ settings: ownerSettings(settings) });
+  }),
+);
+
 adminStoreRouter.get(
   '/settings',
   requireOwner,
@@ -249,7 +288,7 @@ adminStoreRouter.get(
       prisma.paymentMethod.findMany({ orderBy: { sortOrder: 'asc' } }),
       prisma.deliveryOption.findMany({ orderBy: { sortOrder: 'asc' } }),
     ]);
-    res.json({ settings, paymentMethods, deliveryOptions, telegram: { botConfigured: Boolean(bot), botUsername: env.TELEGRAM_BOT_USERNAME } });
+    res.json({ settings: ownerSettings(settings), paymentMethods, deliveryOptions, telegram: { botConfigured: Boolean(bot), botUsername: env.TELEGRAM_BOT_USERNAME } });
   }),
 );
 
@@ -284,7 +323,7 @@ adminStoreRouter.put(
   ah(async (req, res) => {
     await getSettings();
     const settings = await prisma.settings.update({ where: { id: 'default' }, data: req.body });
-    res.json({ settings });
+    res.json({ settings: ownerSettings(settings) });
   }),
 );
 
@@ -352,7 +391,7 @@ adminStoreRouter.post(
     if (!req.file) throw badRequest('Choose a video');
     const url = await saveRaw(req.file.buffer, 'site', req.file.mimetype === 'video/webm' ? 'webm' : 'mp4', req.file.mimetype);
     const settings = await prisma.settings.update({ where: { id: 'default' }, data: { heroVideoUrl: url } });
-    res.json({ settings });
+    res.json({ settings: ownerSettings(settings) });
   }),
 );
 
@@ -364,7 +403,7 @@ adminStoreRouter.post(
     if (!req.file) throw badRequest('Choose an image');
     const saved = await saveImage(req.file.buffer, 'site');
     const settings = await prisma.settings.update({ where: { id: 'default' }, data: { heroImageUrl: imageUrls(saved.key).lg } });
-    res.json({ settings });
+    res.json({ settings: ownerSettings(settings) });
   }),
 );
 

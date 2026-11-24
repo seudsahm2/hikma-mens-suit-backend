@@ -10,7 +10,8 @@ export async function getPublicConfig() {
     prisma.paymentMethod.findMany({ where: { isEnabled: true }, orderBy: { sortOrder: 'asc' } }),
     prisma.deliveryOption.findMany({ where: { isEnabled: true }, orderBy: { sortOrder: 'asc' } }),
   ]);
-  const { channelChatId: _c, adminChatId: _a, updatedAt: _u, ...publicSettings } = settings;
+  // Never expose chat ids or the payment provider key to the public
+  const { channelChatId: _c, adminChatId: _a, updatedAt: _u, paymentVerifyKey: _k, autoVerifyPayments: _v, ...publicSettings } = settings;
   return {
     store: publicSettings,
     paymentMethods: paymentMethods.map(({ id, name, kind, accountName, accountNumber }) => ({

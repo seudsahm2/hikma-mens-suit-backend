@@ -1,9 +1,10 @@
-import { InlineKeyboard, type Context } from 'grammy';
+import { InlineKeyboard } from 'grammy';
 import type { Order, OrderItem, OrderStatus, User } from '@prisma/client';
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { bot, shopUrl } from './bot';
 import { birr, escapeHtml, telegramPhoto } from './media';
+import { canReviewPayment, isFinalStatus, nextSteps } from '../orders/rules';
 
 export type OrderEventKind = 'placed' | 'payment_submitted' | 'payment_verified' | 'payment_rejected' | 'status';
 
@@ -49,26 +50,30 @@ function adminCardText(o: FullOrder, footer?: string) {
     `📍 ${escapeHtml(o.deliveryLabel)}${[o.city, o.area, o.landmark].filter(Boolean).length ? ` — ${escapeHtml([o.city, o.area, o.landmark].filter(Boolean).join(', '))}` : ''}`,
     o.lat !== null && o.lng !== null ? `🗺 <a href="https://maps.google.com/?q=${o.lat},${o.lng}">Map pin</a>` : '',
     o.note ? `📝 ${escapeHtml(o.note)}` : '',
+    o.paymentCheck ? escapeHtml(o.paymentCheck) : '',
     footer ? `\n<i>${escapeHtml(footer)}</i>` : '',
   ];
   return lines.filter((l, idx, arr) => l !== '' || arr[idx - 1] !== '').join('\n').trim();
 }
 
+/** Buttons offered on a card — computed from the same rules the server enforces. */
 function adminKeyboard(o: FullOrder) {
   const kb = new InlineKeyboard();
+  if (isFinalStatus(o.status)) return kb;
   const id = o.id;
-  if (o.status === 'CANCELLED' || o.status === 'DELIVERED' || o.status === 'PICKED_UP') return kb;
-  if (o.paymentStatus === 'SUBMITTED' || o.paymentStatus === 'UNPAID' || o.paymentStatus === 'REJECTED') {
+  if (canReviewPayment(o.status, o.paymentStatus)) {
     kb.text('✅ Payment OK', `o:${id}:verify`);
     if (o.paymentStatus === 'SUBMITTED') kb.text('⚠️ Reject', `o:${id}:reject`);
     kb.row();
   }
-  const pickup = o.deliveryOptionId === 'pickup';
-  if (o.status === 'PENDING' || o.status === 'CONFIRMED') kb.text('📦 Packing', `o:${id}:PACKING`);
-  if (o.status !== 'OUT_FOR_DELIVERY' && !pickup) kb.text('🚚 On the way', `o:${id}:OUT_FOR_DELIVERY`);
-  kb.row();
-  kb.text(pickup ? '🏁 Picked up' : '🏁 Delivered', `o:${id}:${pickup ? 'PICKED_UP' : 'DELIVERED'}`);
-  kb.text('✖️ Cancel', `o:${id}:CANCELLED`);
+  const labels: Partial<Record<OrderStatus, string>> = {
+    PACKING: '📦 Packing',
+    OUT_FOR_DELIVERY: '🚚 On the way',
+    DELIVERED: '🏁 Delivered',
+    PICKED_UP: '🏁 Picked up',
+  };
+  for (const step of nextSteps(o.status, o.deliveryOptionId === 'pickup')) kb.text(labels[step]!, `o:${id}:${step}`);
+  kb.row().text('✖️ Cancel', `o:${id}:CANCELLED`);
   return kb;
 }
 
@@ -76,40 +81,59 @@ async function loadOrder(orderId: string) {
   return prisma.order.findUnique({ where: { id: orderId }, include: { items: true, user: true } });
 }
 
+/** Sends a new card to the order-alerts chat and remembers it, so later changes can update it. */
 async function sendAdminCard(o: FullOrder) {
   if (!bot) return;
   const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
   if (!settings?.adminChatId) return;
   const text = adminCardText(o);
   const reply_markup = adminKeyboard(o);
-  if (o.paymentProofKey) {
-    await bot.api.sendPhoto(settings.adminChatId, telegramPhoto(o.paymentProofKey, 'lg'), {
-      caption: text.slice(0, 1024),
-      parse_mode: 'HTML',
-      reply_markup,
-    });
-  } else {
-    await bot.api.sendMessage(settings.adminChatId, text, {
-      parse_mode: 'HTML',
-      reply_markup,
-      link_preview_options: { is_disabled: true },
-    });
-  }
+  const msg = o.paymentProofKey
+    ? await bot.api.sendPhoto(settings.adminChatId, telegramPhoto(o.paymentProofKey, 'lg'), {
+        caption: text.slice(0, 1024),
+        parse_mode: 'HTML',
+        reply_markup,
+      })
+    : await bot.api.sendMessage(settings.adminChatId, text, {
+        parse_mode: 'HTML',
+        reply_markup,
+        link_preview_options: { is_disabled: true },
+      });
+  await prisma.adminCard.create({
+    data: { orderId: o.id, chatId: settings.adminChatId, messageId: msg.message_id, hasPhoto: Boolean(o.paymentProofKey) },
+  });
 }
 
-/** Re-renders the card after an admin pressed a button on it. */
-export async function refreshAdminCard(orderId: string, ctx: Context, actorName: string) {
-  const o = await loadOrder(orderId);
-  if (!o) return;
-  const text = adminCardText(o, `Last action by ${actorName}`);
+/**
+ * Re-renders EVERY card of this order with its current state — whoever changed it (dashboard, bot,
+ * automation). Stale buttons disappear, so the cards always match the dashboard.
+ */
+export async function refreshAdminCards(orderId: string, footer?: string) {
+  if (!bot) return;
+  const [o, cards] = await Promise.all([loadOrder(orderId), prisma.adminCard.findMany({ where: { orderId } })]);
+  if (!o || !cards.length) return;
+  const text = adminCardText(o, footer);
   const reply_markup = adminKeyboard(o);
-  const msg = ctx.callbackQuery?.message;
-  if (msg && 'photo' in msg && msg.photo) {
-    await ctx.editMessageCaption({ caption: text.slice(0, 1024), parse_mode: 'HTML', reply_markup }).catch(() => undefined);
-  } else {
-    await ctx
-      .editMessageText(text, { parse_mode: 'HTML', reply_markup, link_preview_options: { is_disabled: true } })
-      .catch(() => undefined);
+  for (const card of cards) {
+    try {
+      if (card.hasPhoto) {
+        await bot.api.editMessageCaption(card.chatId, card.messageId, { caption: text.slice(0, 1024), parse_mode: 'HTML', reply_markup });
+      } else {
+        await bot.api.editMessageText(card.chatId, card.messageId, text, {
+          parse_mode: 'HTML',
+          reply_markup,
+          link_preview_options: { is_disabled: true },
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/message is not modified/i.test(message)) continue;
+      if (/message to edit not found|chat not found|bot was kicked|MESSAGE_ID_INVALID/i.test(message)) {
+        await prisma.adminCard.delete({ where: { id: card.id } }).catch(() => undefined); // card was deleted by staff
+        continue;
+      }
+      logger.warn({ err: message, orderId }, 'could not refresh order card');
+    }
   }
 }
 
@@ -185,6 +209,8 @@ export function notifyOrderEvent(orderId: string, kind: OrderEventKind) {
     const o = await loadOrder(orderId);
     if (!o) return;
     const tasks: Promise<unknown>[] = [sendCustomerMessage(o, kind)];
+    // Every change updates the cards already in the chat; a new order or new payment proof also gets a fresh card
+    if (kind !== 'placed') tasks.push(refreshAdminCards(o.id));
     if (kind === 'placed' || kind === 'payment_submitted') tasks.push(sendAdminCard(o));
     const results = await Promise.allSettled(tasks);
     for (const r of results) if (r.status === 'rejected') logger.warn({ err: r.reason, orderId, kind }, 'telegram notify failed');
