@@ -51,7 +51,9 @@ async function describe(method: string, path: string, body: Record<string, unkno
       entityId: m[1],
     };
   if ((m = p.match(/^\/orders\/([^/]+)\/note$/))) return { action: 'order.note', summary: `Note on ${await orderNo(m[1]!)}`, entity: 'order', entityId: m[1] };
-  if ((m = p.match(/^\/orders\/([^/]+)\/driver$/))) return { action: 'order.driver', summary: body.driverId ? `Sent ${await orderNo(m[1]!)} with a driver` : `Removed the driver from ${await orderNo(m[1]!)}`, entity: 'order', entityId: m[1] };
+  if ((m = p.match(/^\/orders\/([^/]+)\/dispatch\/cancel$/))) return { action: 'order.dispatch_cancel', summary: `Cancelled the driver for ${await orderNo(m[1]!)}`, entity: 'order', entityId: m[1] };
+  if (p.match(/^\/orders\/([^/]+)\/dispatch$/)) return null; // logged by dispatch() itself, with the driver's name
+  if ((m = p.match(/^\/orders\/([^/]+)\/handover$/))) return { action: 'order.handover', summary: `Handed ${await orderNo(m[1]!)} to the driver — on the way`, entity: 'order', entityId: m[1] };
   if (p === '/orders' && method === 'POST') return { action: 'order.create', summary: `Created an order for ${String(body.customerName ?? 'a customer')}`, entity: 'order' };
 
   if (p === '/products' && method === 'POST') return { action: 'product.create', summary: `Created ${String(body.nameEn ?? 'a product')}`, entity: 'product' };

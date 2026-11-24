@@ -262,5 +262,5 @@ export function telegramWebhook() {
 export async function startPollingIfEnabled() {
   if (!bot || !env.TELEGRAM_POLLING) return;
   logger.warn('Telegram bot running in polling mode (development)');
-  void bot.start({ drop_pending_updates: true, allowed_updates: ['message', 'callback_query', 'channel_post'] });
+  void bot.start({ drop_pending_updates: true, allowed_updates: ['message', 'edited_message', 'callback_query', 'channel_post'] });
 }

@@ -356,6 +356,7 @@ model Order {
   /// Driver delivering this order (Batch D)
   driverId          String?
   driver            Driver?           @relation(fields: [driverId], references: [id])
+  deliveryOffers    DeliveryOffer[]
   /// Ordered while the product was on pre-order (arrives later)
   isPreorder        Boolean           @default(false)
   /// 4-digit code the customer gives the driver to confirm delivery (only the customer sees it)
@@ -718,17 +719,24 @@ model SupportRequest {
 
 /// Delivery person. Linked to their Telegram with a one-time code (/driver CODE), then gets order cards.
 model Driver {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   name            String
   phone           String
-  telegramId      BigInt?  @unique
-  linkCode        String?  @unique
-  isActive        Boolean  @default(true)
+  telegramId      BigInt?   @unique
+  linkCode        String?   @unique
+  isActive        Boolean   @default(true)
   /// The order whose delivery code this driver is typing right now (in the bot chat)
   awaitingOrderId String?
-  createdAt       DateTime @default(now())
+  /// Takes jobs only when online (/online, /offline in the bot)
+  isOnline        Boolean   @default(false)
+  /// Latest position from Telegram live location
+  lat             Float?
+  lng             Float?
+  locationAt      DateTime?
+  createdAt       DateTime  @default(now())
 
   orders Order[]
+  offers DeliveryOffer[]
 }
 
 /// Who did what in the admin (owner only). Written automatically for every staff change.
@@ -745,4 +753,29 @@ model ActivityLog {
 
   @@index([createdAt])
   @@index([actorId, createdAt])
+}
+
+/// A delivery job offered to a driver: offered → accepted (coming to the shop) → handed over → completed.
+/// Declined / expired offers move on to the next nearest driver when dispatch was automatic.
+model DeliveryOffer {
+  id          String    @id @default(cuid())
+  orderId     String
+  driverId    String
+  /// offered | accepted | declined | expired | cancelled | completed
+  status      String    @default("offered")
+  /// picked by "Find nearest driver" (the next driver is tried automatically)
+  auto        Boolean   @default(false)
+  /// minutes until the driver is at the shop (chosen when accepting)
+  etaMinutes  Int?
+  offeredAt   DateTime  @default(now())
+  expiresAt   DateTime
+  respondedAt DateTime?
+  /// Telegram message of the offer card (to edit it later)
+  messageId   Int?
+
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([status, expiresAt])
+  @@index([orderId])
 }

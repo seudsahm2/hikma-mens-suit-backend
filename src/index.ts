@@ -10,6 +10,7 @@ import { startBroadcastWorker } from './modules/telegram/broadcast';
 import { startDailyReportWorker } from './modules/reports/dailyReport';
 import { startBagReminderWorker } from './modules/cart/bagReminder';
 import { startReviewRequestWorker } from './modules/reviews/reviews.service';
+import { startDispatchWorker } from './modules/delivery/dispatch';
 
 const app = createApp();
 
@@ -31,6 +32,8 @@ const stopDailyReport = startDailyReportWorker();
 const stopBagReminders = startBagReminderWorker();
 // A day after delivery: "How do you like it? ⭐ Rate it"
 const stopReviewRequests = startReviewRequestWorker();
+// Driver job offers that weren't answered in time go to the next driver
+const stopDispatch = startDispatchWorker();
 
 // Catch a token from another bot early: sign-in links and the Mini App would silently fail
 if (bot) {
@@ -41,6 +44,19 @@ if (bot) {
           { tokenBot: me.username, expected: env.TELEGRAM_BOT_USERNAME },
           'TELEGRAM_BOT_TOKEN belongs to a different bot than TELEGRAM_BOT_USERNAME — Telegram sign-in will not work',
         );
+        return;
+      }
+      // Drivers' live location arrives as edited messages: make sure the webhook receives them
+      // (keeps the existing webhook address and secret — no need to re-run bot:setup)
+      if (!env.TELEGRAM_POLLING && env.TELEGRAM_WEBHOOK_SECRET) {
+        void bot!.api.getWebhookInfo().then(async (info) => {
+          if (!info.url || info.allowed_updates?.includes('edited_message')) return;
+          await bot!.api.setWebhook(info.url, {
+            secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+            allowed_updates: ['message', 'edited_message', 'callback_query', 'channel_post'],
+          });
+          logger.info('webhook now also receives edited messages (driver live location)');
+        }).catch((err) => logger.warn({ err: (err as Error).message }, 'could not update webhook updates'));
       }
     },
     (err) => logger.warn({ err: (err as Error).message }, 'could not reach Telegram to verify the bot token'),
@@ -63,6 +79,7 @@ async function shutdown(signal: string) {
   stopDailyReport();
   stopBagReminders();
   stopReviewRequests();
+  stopDispatch();
   if (bot && env.TELEGRAM_POLLING) await bot.stop().catch(() => undefined);
   server.close(() => {
     void prisma.$disconnect().finally(() => process.exit(0));

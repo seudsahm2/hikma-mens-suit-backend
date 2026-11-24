@@ -20,6 +20,7 @@ import { normalizeEthiopianPhone } from '../../lib/phone';
 import { bot } from '../telegram/bot';
 import { birr, escapeHtml } from '../telegram/media';
 import { logActivity } from '../admin/activity';
+import { cancelDispatch, dispatch, dispatchState, driverBoard, handover } from './dispatch';
 
 const MAX_TRIES = 5;
 const linkCode = () => Array.from({ length: 6 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[randomInt(32)]).join('');
@@ -37,7 +38,7 @@ function mapLink(o: { lat: number | null; lng: number | null; area: string | nul
 }
 
 /** The order card a driver receives. */
-async function sendDriverCard(orderId: string) {
+export async function sendDriverCard(orderId: string) {
   if (!bot) return;
   const o = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true, driver: true } });
   if (!o?.driver?.telegramId) return;
@@ -76,11 +77,22 @@ driversRouter.use(requireStaff);
 driversRouter.get(
   '/drivers',
   ah(async (_req, res) => {
-    const drivers = await prisma.driver.findMany({ orderBy: [{ isActive: 'desc' }, { createdAt: 'asc' }] });
-    const active = await prisma.order.groupBy({ by: ['driverId'], where: { driverId: { not: null }, status: 'OUT_FOR_DELIVERY' }, _count: true });
-    const byId = new Map(active.map((a) => [a.driverId, a._count]));
+    const board = await driverBoard();
     res.json({
-      drivers: drivers.map((d) => ({ id: d.id, name: d.name, phone: d.phone, isActive: d.isActive, linked: Boolean(d.telegramId), linkCode: d.telegramId ? null : d.linkCode, onTheWay: byId.get(d.id) ?? 0 })),
+      drivers: board.map(({ driver: d, busy, fresh, distanceKm }) => ({
+        id: d.id,
+        name: d.name,
+        phone: d.phone,
+        isActive: d.isActive,
+        linked: Boolean(d.telegramId),
+        linkCode: d.telegramId ? null : d.linkCode,
+        isOnline: d.isOnline,
+        busy,
+        live: fresh,
+        distanceKm,
+        locationAt: d.locationAt,
+        mapUrl: d.lat != null && d.lng != null ? `https://maps.google.com/?q=${d.lat},${d.lng}` : null,
+      })),
     });
   }),
 );
@@ -108,30 +120,41 @@ driversRouter.patch(
   }),
 );
 
-/** Give an order to a driver (and send it out). */
-driversRouter.post(
-  '/orders/:id/driver',
-  validate(z.object({ driverId: z.string().min(1).max(40).nullable() })),
+/** Where the delivery of an order stands (offer, driver, live location). */
+driversRouter.get(
+  '/orders/:id/dispatch',
   ah(async (req, res) => {
-    const order = await prisma.order.findUnique({ where: { id: req.params.id } });
-    if (!order) throw notFound('Order not found');
-    if (order.deliveryOptionId === 'pickup') throw conflict('This order is picked up at the shop', 'PICKUP');
-    if (['DELIVERED', 'PICKED_UP', 'CANCELLED'].includes(order.status)) throw conflict('This order is finished', 'FINISHED');
-    if (req.body.driverId) {
-      const d = await prisma.driver.findUnique({ where: { id: req.body.driverId } });
-      if (!d?.isActive) throw notFound('Driver not found');
-      if (!d.telegramId) throw conflict(`${d.name} hasn’t connected Telegram yet — send them the code`, 'NOT_LINKED');
-    }
-    await prisma.order.update({ where: { id: order.id }, data: { driverId: req.body.driverId } });
-    const { canMoveTo } = await import('../orders/rules');
-    if (req.body.driverId && order.status !== 'OUT_FOR_DELIVERY' && canMoveTo(order.status, 'OUT_FOR_DELIVERY')) {
-      const { changeStatus } = await import('../orders/orders.service');
-      await changeStatus(order.id, 'OUT_FOR_DELIVERY', req.user!.id, 'Sent out with the driver');
-    }
-    if (req.body.driverId) void sendDriverCard(order.id).catch((err) => logger.warn({ err }, 'driver card failed'));
+    res.set('Cache-Control', 'no-store');
+    res.json(await dispatchState(req.params.id!));
+  }),
+);
+
+/** Offer the job: to a chosen driver, or the nearest free one (driverId omitted). */
+driversRouter.post(
+  '/orders/:id/dispatch',
+  validate(z.object({ driverId: z.string().min(1).max(40).optional() })),
+  ah(async (req, res) => {
+    await dispatch(req.params.id!, req.body.driverId ?? null, { id: req.user!.id, fullName: req.user!.fullName });
+    res.status(201).json(await dispatchState(req.params.id!));
+  }),
+);
+
+driversRouter.post(
+  '/orders/:id/dispatch/cancel',
+  ah(async (req, res) => {
+    await cancelDispatch(req.params.id!);
+    res.json(await dispatchState(req.params.id!));
+  }),
+);
+
+/** The driver took the items: order goes "On the way" (customer gets the code). */
+driversRouter.post(
+  '/orders/:id/handover',
+  ah(async (req, res) => {
+    await handover(req.params.id!, req.user!.id);
     const { orderInclude, serializeOrder } = await import('../orders/orders.service');
-    const fresh = await prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
-    res.json({ order: serializeOrder(fresh, { staff: true }) });
+    const fresh = await prisma.order.findUniqueOrThrow({ where: { id: req.params.id }, include: orderInclude });
+    res.json({ order: serializeOrder(fresh, { staff: true }), dispatch: await dispatchState(req.params.id!) });
   }),
 );
 
