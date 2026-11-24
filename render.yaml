@@ -35,7 +35,5 @@ services:
         value: hikmafashionbot
       - key: TELEGRAM_WEBHOOK_SECRET
         generateValue: true
-      - key: TELEGRAM_MINIAPP_SHORT_NAME
-        value: shop
       - key: SHEGERPAY_API_KEY
         sync: false

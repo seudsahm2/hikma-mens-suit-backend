@@ -12,7 +12,7 @@ settingsRouter.get(
     res.set('Cache-Control', 'public, max-age=60');
     res.json({
       ...config,
-      telegram: { botUsername: env.TELEGRAM_BOT_USERNAME, miniAppShortName: env.TELEGRAM_MINIAPP_SHORT_NAME },
+      telegram: { botUsername: env.TELEGRAM_BOT_USERNAME },
     });
   }),
 );

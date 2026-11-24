@@ -14,10 +14,13 @@ export function shopUrl(path = '/') {
   return `${env.clientUrl}${path}`;
 }
 
-/** Direct Mini App link (works in channels, where web_app buttons are not allowed). */
+/**
+ * Link that opens the bot's Main Mini App (BotFather → Bot Settings → Configure Mini App → Main App).
+ * Works in channels, where web_app buttons are not allowed, and doesn't depend on any short name.
+ */
 export function miniAppLink(startParam?: string) {
-  const base = `https://t.me/${env.TELEGRAM_BOT_USERNAME}/${env.TELEGRAM_MINIAPP_SHORT_NAME}`;
-  return startParam ? `${base}?startapp=${encodeURIComponent(startParam)}` : base;
+  const base = `https://t.me/${env.TELEGRAM_BOT_USERNAME}`;
+  return startParam ? `${base}?startapp=${encodeURIComponent(startParam)}` : `${base}?startapp`;
 }
 
 function isAm(ctx: Context) {

@@ -19,7 +19,6 @@ const schema = z.object({
   TELEGRAM_BOT_TOKEN: optional,
   TELEGRAM_BOT_USERNAME: z.string().default('hikmafashionbot'),
   TELEGRAM_WEBHOOK_SECRET: optional,
-  TELEGRAM_MINIAPP_SHORT_NAME: z.string().default('shop'),
   /** Use long polling instead of a webhook (local development only). */
   TELEGRAM_POLLING: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   /** Development only: enables POST /api/auth/dev (sign in as a test customer without Telegram). Ignored in production. */
