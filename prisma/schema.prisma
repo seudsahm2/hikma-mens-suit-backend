@@ -304,6 +304,15 @@ model DeliveryOption {
   sortOrder   Int     @default(0)
 }
 
+/// One-time codes the owner sends to the bot ("/link CODE") to connect a chat or channel.
+/// Stored in the database so they survive server restarts (Render restarts on every deploy).
+model LinkCode {
+  code      String   @id
+  purpose   String // "admin" | "channel"
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
 model Settings {
   id                   String   @id @default("default")
   storeName            String   @default("Hikma Men's Fashion")

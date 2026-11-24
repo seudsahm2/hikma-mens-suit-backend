@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
+import { env } from '../../config/env';
 import { prisma } from '../../lib/prisma';
 import { ah, badRequest, conflict, notFound } from '../../lib/http';
 import { normalizeEthiopianPhone } from '../../lib/phone';
@@ -248,7 +249,7 @@ adminStoreRouter.get(
       prisma.paymentMethod.findMany({ orderBy: { sortOrder: 'asc' } }),
       prisma.deliveryOption.findMany({ orderBy: { sortOrder: 'asc' } }),
     ]);
-    res.json({ settings, paymentMethods, deliveryOptions, telegram: { botConfigured: Boolean(bot) } });
+    res.json({ settings, paymentMethods, deliveryOptions, telegram: { botConfigured: Boolean(bot), botUsername: env.TELEGRAM_BOT_USERNAME } });
   }),
 );
 
@@ -372,7 +373,7 @@ adminStoreRouter.post(
   requireOwner,
   validate(z.object({ purpose: z.enum(['admin', 'channel']) })),
   ah(async (req, res) => {
-    res.json({ code: createLinkCode(req.body.purpose), expiresInMinutes: 10 });
+    res.json({ code: await createLinkCode(req.body.purpose), expiresInMinutes: 15, botUsername: env.TELEGRAM_BOT_USERNAME });
   }),
 );
 

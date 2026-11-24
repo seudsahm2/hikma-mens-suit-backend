@@ -94,22 +94,41 @@ if (bot) {
     );
   });
 
-  // Owner links the admin group: dashboard shows a code, owner sends "/link CODE" in the group.
+  // Order alerts: the dashboard shows a code; the owner sends "/link CODE" in a private chat with the bot
+  // (alerts come to that person) or in a staff group (alerts come to the group).
   bot.command('link', async (ctx) => {
-    const purpose = consumeLinkCode(String(ctx.match ?? '').trim().toUpperCase());
-    if (purpose !== 'admin' || ctx.chat.type === 'private') return;
-    await prisma.settings.update({ where: { id: 'default' }, data: { adminChatId: String(ctx.chat.id) } });
-    await ctx.reply('✅ This group will now receive new orders.');
+    const purpose = await consumeLinkCode(String(ctx.match ?? ''));
+    if (!purpose) {
+      await ctx.reply('⚠️ That code is wrong or expired. Get a new one in Admin → Settings → Telegram.');
+      return;
+    }
+    if (purpose === 'channel') {
+      await ctx.reply('ℹ️ This code is for the channel. Post it in the channel instead (the bot must be a channel admin).');
+      return;
+    }
+    await prisma.settings.upsert({
+      where: { id: 'default' },
+      create: { id: 'default', adminChatId: String(ctx.chat.id) },
+      update: { adminChatId: String(ctx.chat.id) },
+    });
+    await ctx.reply(ctx.chat.type === 'private' ? '✅ New orders will now arrive in this chat.' : '✅ This group will now receive new orders.');
   });
 
-  // Owner links the channel: posts "/link CODE" in the channel; the bot must be a channel admin.
+  // Channel: the owner posts "/link CODE" in the channel; the bot must be an admin there.
   bot.on('channel_post:text', async (ctx) => {
-    const text = ctx.channelPost.text.trim();
-    if (!text.startsWith('/link ')) return;
-    const purpose = consumeLinkCode(text.slice(6).trim().toUpperCase());
-    if (purpose !== 'channel') return;
-    await prisma.settings.update({ where: { id: 'default' }, data: { channelChatId: String(ctx.chat.id) } });
+    const m = ctx.channelPost.text.trim().match(/^\/link(?:@\w+)?\s+([A-Za-z0-9]{6})\b/);
+    if (!m) return;
+    const purpose = await consumeLinkCode(m[1]!);
     await ctx.api.deleteMessage(ctx.chat.id, ctx.channelPost.message_id).catch(() => undefined);
+    if (purpose !== 'channel') return;
+    await prisma.settings.upsert({
+      where: { id: 'default' },
+      create: { id: 'default', channelChatId: String(ctx.chat.id) },
+      update: { channelChatId: String(ctx.chat.id) },
+    });
+    // Short confirmation that removes itself
+    const note = await ctx.api.sendMessage(ctx.chat.id, '✅ Channel connected to the Hikma shop.').catch(() => null);
+    if (note) setTimeout(() => void ctx.api.deleteMessage(ctx.chat.id, note.message_id).catch(() => undefined), 15_000);
   });
 
   // Admin order actions from the group card: "o:<orderId>:<action>"
