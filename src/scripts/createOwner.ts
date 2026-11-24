@@ -2,7 +2,7 @@
  * Creates (or resets) the single OWNER account from OWNER_NAME / OWNER_PHONE / OWNER_PASSWORD.
  *   npm run owner:create
  */
-import 'dotenv/config';
+import '../config/loadEnv';
 import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { normalizeEthiopianPhone } from '../lib/phone';

@@ -19,7 +19,7 @@
  * Placeholder stock is only for showing the catalogue; the owner sets real stock per size in the
  * dashboard (Products → product → Sizes, colours & stock).
  */
-import 'dotenv/config';
+import '../config/loadEnv';
 import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
