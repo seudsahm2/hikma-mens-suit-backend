@@ -270,6 +270,7 @@ const settingsSchema = z
     heroVideoUrl: z.string().trim().max(500).nullable(),
     heroImageUrl: z.string().trim().max(500).nullable(),
     partialPaymentEnabled: z.boolean(),
+    channelAutoImport: z.boolean(),
     depositPercent: z.number().int().min(10).max(90),
     returnPolicyEn: z.string().trim().max(3000),
     returnPolicyAm: z.string().trim().max(3000),

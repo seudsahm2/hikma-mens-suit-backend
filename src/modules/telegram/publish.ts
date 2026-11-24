@@ -6,6 +6,7 @@ import { getSettings } from '../settings/settings.service';
 import { bot, miniAppLink, shopUrl } from './bot';
 import { buildCaption } from './captions';
 import { telegramPhoto } from './media';
+import { recordOwnPost } from './channelImport';
 
 async function captionFor(productId: string) {
   const [p, settings, addis] = await Promise.all([
@@ -62,6 +63,7 @@ export async function publishToChannel(productId: string, captionOverride?: stri
   if (photos.length === 1) {
     const msg = await bot.api.sendPhoto(chat, telegramPhoto(photos[0]!.key), { caption: text, reply_markup: keyboard });
     messageId = msg.message_id;
+    await recordOwnPost(chat, [msg.message_id]); // never auto-import our own post back as a draft
   } else {
     // Albums can't carry buttons, so the button goes in a short follow-up message.
     const media: InputMediaPhoto[] = photos.map((img, i) => ({
@@ -71,6 +73,8 @@ export async function publishToChannel(productId: string, captionOverride?: stri
     }));
     const msgs = await bot.api.sendMediaGroup(chat, media);
     messageId = msgs[0]!.message_id;
+    const groupId = (msgs[0] as { media_group_id?: string }).media_group_id;
+    await recordOwnPost(chat, msgs.map((m) => m.message_id), groupId);
     await bot.api.sendMessage(chat, '👇', { reply_markup: keyboard, reply_parameters: { message_id: messageId } });
   }
 

@@ -161,6 +161,24 @@ async function sendCustomerMessage(o: FullOrder, kind: OrderEventKind) {
  * Fire-and-forget: never blocks or fails the request that triggered it.
  * Customers only receive messages if they have started the bot.
  */
+/** Tells the order-alerts chat that a channel post became a draft, with a button to review it. */
+export async function notifyNewDraft(draft: { productId: string; name: string; price: number | null; photos: number }) {
+  if (!bot) return;
+  const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
+  if (!settings?.adminChatId) return;
+  const price = draft.price ? birr(draft.price) : 'no price yet';
+  await bot.api.sendMessage(
+    settings.adminChatId,
+    [
+      '📥 <b>New draft from your channel</b>',
+      `${escapeHtml(draft.name)} · ${price} · ${draft.photos} photo${draft.photos === 1 ? '' : 's'}`,
+      '',
+      'Check the name, sizes and stock, then put it on sale.',
+    ].join('\n'),
+    { parse_mode: 'HTML', reply_markup: new InlineKeyboard().url('✏️  Review draft', shopUrl(`/admin/products/${draft.productId}`)) },
+  );
+}
+
 export function notifyOrderEvent(orderId: string, kind: OrderEventKind) {
   if (!bot) return;
   void (async () => {

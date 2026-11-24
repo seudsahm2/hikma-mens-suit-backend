@@ -5,6 +5,7 @@ import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { consumeLinkCode } from './linkCodes';
 import { confirmLoginToken } from '../auth/botLogin';
+import { collectChannelPost, processReadyImports, toPostInput } from './channelImport';
 
 /** The bot exists only when a token is configured; everything else degrades gracefully. */
 export const bot: Bot | null = env.TELEGRAM_BOT_TOKEN ? new Bot(env.TELEGRAM_BOT_TOKEN) : null;
@@ -141,6 +142,13 @@ if (bot) {
   });
 
 
+  // Channel auto-import: photo posts in the linked channel are collected and become draft products.
+  // (/link posts never get here — the command handler above handles them and stops the chain.)
+  bot.on('channel_post', async (ctx) => {
+    const input = toPostInput(ctx.channelPost);
+    if (input) await collectChannelPost(input);
+  });
+
   // Admin order actions from the group card: "o:<orderId>:<action>"
   bot.callbackQuery(/^o:([a-z0-9]+):([A-Za-z_]+)$/, async (ctx) => {
     const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
@@ -166,6 +174,30 @@ if (bot) {
       await ctx.answerCallbackQuery({ text: message.slice(0, 190), show_alert: true });
     }
   });
+}
+
+/** Downloads a photo the bot received (Bot API file download; files up to 20 MB). */
+export async function telegramDownload(fileId: string): Promise<Buffer> {
+  if (!bot) throw new Error('Bot not configured');
+  const file = await bot.api.getFile(fileId);
+  if (!file.file_path) throw new Error('Telegram returned no file path');
+  const res = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${file.file_path}`, { signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`Photo download failed (${res.status})`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** Background worker that turns collected channel posts into drafts. No-op without a bot. */
+export function startChannelImportWorker(onDraft: Parameters<typeof processReadyImports>[1]) {
+  if (!bot) return () => undefined;
+  let running = false;
+  const id = setInterval(() => {
+    if (running) return;
+    running = true;
+    processReadyImports(telegramDownload, onDraft)
+      .catch((err) => logger.warn({ err }, 'channel import worker error'))
+      .finally(() => (running = false));
+  }, 3000);
+  return () => clearInterval(id);
 }
 
 export function telegramWebhook() {

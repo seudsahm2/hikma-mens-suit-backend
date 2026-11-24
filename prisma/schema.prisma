@@ -318,6 +318,28 @@ model LoginToken {
   @@index([expiresAt])
 }
 
+/// Channel auto-import queue. Telegram delivers each photo of an album as a separate update, so a post
+/// is collected here first (in the database, so restarts lose nothing) and turned into a draft product
+/// once it has been quiet for a few seconds. Also records the shop's OWN posts so they're never imported.
+model ChannelImport {
+  /// "<chatId>:g<mediaGroupId>" for albums, "<chatId>:m<messageId>" for single posts
+  id         String   @id
+  chatId     String
+  messageIds Int[]
+  fileIds    String[]
+  caption    String   @default("")
+  postedAt   DateTime
+  /// collecting | processing | done | skipped | own | failed
+  status     String   @default("collecting")
+  attempts   Int      @default(0)
+  productId  String?
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([status, updatedAt])
+}
+
 /// One-time codes the owner sends to the bot ("/link CODE") to connect a chat or channel.
 /// Stored in the database so they survive server restarts (Render restarts on every deploy).
 model LinkCode {
@@ -348,6 +370,8 @@ model Settings {
   returnPolicyEn       String   @default("")
   returnPolicyAm       String   @default("")
   // Telegram
+  /// New posts in the linked channel become draft products
+  channelAutoImport    Boolean  @default(true)
   channelChatId        String?
   adminChatId          String?
   updatedAt            DateTime @updatedAt

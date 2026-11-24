@@ -4,7 +4,8 @@ import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { storageMode } from './lib/storage';
 import { cancelStaleUnpaidOrders } from './modules/orders/orders.service';
-import { bot, startPollingIfEnabled } from './modules/telegram/bot';
+import { bot, startChannelImportWorker, startPollingIfEnabled } from './modules/telegram/bot';
+import { notifyNewDraft } from './modules/telegram/notify';
 
 const app = createApp();
 
@@ -16,6 +17,9 @@ const server = app.listen(env.PORT, () => {
 });
 
 void startPollingIfEnabled();
+
+// Channel auto-import: new channel posts → draft products (+ a message to the order-alerts chat)
+const stopChannelImport = startChannelImportWorker(notifyNewDraft);
 
 // Catch a token from another bot early: sign-in links and the Mini App would silently fail
 if (bot) {
@@ -43,6 +47,7 @@ const sweeper = setInterval(() => {
 async function shutdown(signal: string) {
   logger.info({ signal }, 'shutting down');
   clearInterval(sweeper);
+  stopChannelImport();
   if (bot && env.TELEGRAM_POLLING) await bot.stop().catch(() => undefined);
   server.close(() => {
     void prisma.$disconnect().finally(() => process.exit(0));
