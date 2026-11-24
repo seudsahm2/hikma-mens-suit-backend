@@ -42,21 +42,22 @@ model User {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  orders       Order[]
-  orderEvents  OrderEvent[]
-  stockMoves   StockMovement[]
-  stockAlerts  StockAlert[]
-  cart         CartSnapshot?
-  reviews      Review[]
-  credits      CreditEntry[]
-  wishlist     WishlistItem[]
-  exchanges    ExchangeRequest[]
+  orders          Order[]
+  orderEvents     OrderEvent[]
+  stockMoves      StockMovement[]
+  stockAlerts     StockAlert[]
+  cart            CartSnapshot?
+  reviews         Review[]
+  credits         CreditEntry[]
+  wishlist        WishlistItem[]
+  exchanges       ExchangeRequest[]
+  supportRequests SupportRequest[]
   /// Personal invite code (created the first time they open "Invite a friend")
-  referralCode String?           @unique
+  referralCode    String?           @unique
   /// Who invited this customer (set by their first order with an invite code)
-  referredById String?
+  referredById    String?
   /// Size memory + size helper answers: { height?, weight?, fit?, sizes: { <categorySlug>: <size> } }
-  sizeProfile  Json?
+  sizeProfile     Json?
 }
 
 /// "Notify me when back": one row per customer per sold-out size/colour.
@@ -359,6 +360,7 @@ model Order {
   referrerId       String?
   promotion        Promotion?        @relation(fields: [promotionId], references: [id])
   exchanges        ExchangeRequest[]
+  supportRequests  SupportRequest[]
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
 
@@ -674,5 +676,28 @@ model ExchangeRequest {
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+  @@index([orderId])
+}
+
+/// "Need help with this order?" — a short conversation between the customer and staff about one order.
+model SupportRequest {
+  id        String   @id @default(cuid())
+  orderId   String
+  userId    String
+  /// where | payment | wrong_item | damaged | other
+  topic     String
+  /// open | solved
+  status    String   @default("open")
+  /// [{ from: "customer" | "staff", text, at, by? }]
+  messages  Json
+  /// who wrote last (a customer message means it waits for staff)
+  lastFrom  String   @default("customer")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, updatedAt])
   @@index([orderId])
 }

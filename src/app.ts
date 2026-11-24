@@ -26,6 +26,7 @@ import { pricingRouter } from './modules/pricing/pricing.routes';
 import { adminPromotionsRouter } from './modules/admin/promotions.routes';
 import { wishlistRouter } from './modules/after/wishlist';
 import { adminExchangesRouter, exchangesRouter } from './modules/after/exchanges';
+import { adminSupportRouter, supportRouter } from './modules/after/support';
 
 installBigIntJson();
 
@@ -89,6 +90,8 @@ export function createApp() {
   app.use('/api/wishlist', wishlistRouter);
   app.use('/api/exchanges', exchangesRouter);
   app.use('/api/admin/exchanges', adminExchangesRouter);
+  app.use('/api/support', supportRouter);
+  app.use('/api/admin/support', adminSupportRouter);
   app.use('/api/admin/reviews', adminReviewsRouter);
   app.use('/api/admin/products', requireStaff, adminProductsRouter);
   app.use('/api/admin/orders', requireStaff, adminOrdersRouter);
