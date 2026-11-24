@@ -22,6 +22,8 @@ import { geoRouter } from './modules/geo/geo.routes';
 import { alertsRouter } from './modules/alerts/alerts.routes';
 import { cartRouter } from './modules/cart/cart.routes';
 import { adminReviewsRouter, reviewsRouter } from './modules/reviews/reviews.routes';
+import { pricingRouter } from './modules/pricing/pricing.routes';
+import { adminPromotionsRouter } from './modules/admin/promotions.routes';
 
 installBigIntJson();
 
@@ -81,10 +83,12 @@ export function createApp() {
   app.use('/api/alerts', alertsRouter);
   app.use('/api/cart', cartRouter);
   app.use('/api/reviews', reviewsRouter);
+  app.use('/api', pricingRouter);
   app.use('/api/admin/reviews', adminReviewsRouter);
   app.use('/api/admin/products', requireStaff, adminProductsRouter);
   app.use('/api/admin/orders', requireStaff, adminOrdersRouter);
   app.use('/api/admin/counter', requireStaff, adminCounterRouter);
+  app.use('/api/admin', requireStaff, adminPromotionsRouter);
   app.use('/api/admin', requireStaff, adminStoreRouter);
 
   app.use(notFoundHandler);

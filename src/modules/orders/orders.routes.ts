@@ -32,6 +32,8 @@ const createSchema = z.object({
   payDeposit: z.boolean().default(false),
   note: z.string().trim().max(500).optional(),
   source: z.enum(['WEB', 'MINI_APP']).default('WEB'),
+  code: z.string().trim().max(40).optional(),
+  useCredit: z.boolean().default(false),
 });
 
 ordersRouter.post(

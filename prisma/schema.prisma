@@ -42,14 +42,19 @@ model User {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  orders      Order[]
-  orderEvents OrderEvent[]
-  stockMoves  StockMovement[]
-  stockAlerts StockAlert[]
-  cart        CartSnapshot?
-  reviews     Review[]
+  orders       Order[]
+  orderEvents  OrderEvent[]
+  stockMoves   StockMovement[]
+  stockAlerts  StockAlert[]
+  cart         CartSnapshot?
+  reviews      Review[]
+  credits      CreditEntry[]
+  /// Personal invite code (created the first time they open "Invite a friend")
+  referralCode String?         @unique
+  /// Who invited this customer (set by their first order with an invite code)
+  referredById String?
   /// Size memory + size helper answers: { height?, weight?, fit?, sizes: { <categorySlug>: <size> } }
-  sizeProfile Json?
+  sizeProfile  Json?
 }
 
 /// "Notify me when back": one row per customer per sold-out size/colour.
@@ -177,14 +182,15 @@ model Product {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
-  category   Category         @relation(fields: [categoryId], references: [id])
-  brand      Brand?           @relation(fields: [brandId], references: [id])
-  images     ProductImage[]
-  variants   ProductVariant[]
-  broadcasts Broadcast[]
+  category    Category         @relation(fields: [categoryId], references: [id])
+  brand       Brand?           @relation(fields: [brandId], references: [id])
+  images      ProductImage[]
+  variants    ProductVariant[]
+  broadcasts  Broadcast[]
   /// "Original" proof photos (box, tags, receipt). Any proof photo = Original badge.
-  proofs     ProofPhoto[]
-  reviews    Review[]
+  proofs      ProofPhoto[]
+  reviews     Review[]
+  bundleItems BundleItem[]
 
   @@index([status, categoryId])
   @@index([createdAt])
@@ -339,6 +345,16 @@ model Order {
   paymentCheck     String?
   /// When the customer was asked (on Telegram) to review this order
   reviewAskedAt    DateTime?
+  /// Discounts (all computed on the server): total and breakdown [{ kind, label, amount, code? }]
+  discountTotal    Int           @default(0)
+  discounts        Json?
+  /// Free gift promised by a promotion ("Free perfume sample") — staff add it to the parcel
+  giftNote         String?
+  promotionId      String?
+  creditUsed       Int           @default(0)
+  /// Customer who invited the buyer (referral reward goes to them once this order is received)
+  referrerId       String?
+  promotion        Promotion?    @relation(fields: [promotionId], references: [id])
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
@@ -475,43 +491,54 @@ model LinkCode {
 }
 
 model Settings {
-  id                    String   @id @default("default")
-  storeName             String   @default("Hikma Men's Fashion")
-  phone                 String   @default("0955706969")
-  telegramInbox         String   @default("Hikm5506")
-  telegramChannelUrl    String   @default("")
-  tikTokHandle          String   @default("hikutiiiiiiii")
-  addressEn             String   @default("Betel, Yellow Building, opposite MK Building · Shop G2")
-  addressAm             String   @default("ቤተል ቢጫ ፎቅ፣ ፊትለፊት MK ህንፃ፣ ሱቅ ቁጥር G2")
-  mapLat                Float?
-  mapLng                Float?
-  openingHours          String   @default("Mon–Sun · 8:30 – 21:00")
-  announcementEn        String   @default("")
-  announcementAm        String   @default("")
-  heroVideoUrl          String?
-  heroImageUrl          String?
-  partialPaymentEnabled Boolean  @default(true)
-  depositPercent        Int      @default(50)
-  returnPolicyEn        String   @default("")
-  returnPolicyAm        String   @default("")
+  id                     String   @id @default("default")
+  storeName              String   @default("Hikma Men's Fashion")
+  phone                  String   @default("0955706969")
+  telegramInbox          String   @default("Hikm5506")
+  telegramChannelUrl     String   @default("")
+  tikTokHandle           String   @default("hikutiiiiiiii")
+  addressEn              String   @default("Betel, Yellow Building, opposite MK Building · Shop G2")
+  addressAm              String   @default("ቤተል ቢጫ ፎቅ፣ ፊትለፊት MK ህንፃ፣ ሱቅ ቁጥር G2")
+  mapLat                 Float?
+  mapLng                 Float?
+  openingHours           String   @default("Mon–Sun · 8:30 – 21:00")
+  announcementEn         String   @default("")
+  announcementAm         String   @default("")
+  heroVideoUrl           String?
+  heroImageUrl           String?
+  partialPaymentEnabled  Boolean  @default(true)
+  depositPercent         Int      @default(50)
+  returnPolicyEn         String   @default("")
+  returnPolicyAm         String   @default("")
   // Telegram
   /// New posts in the linked channel become draft products
-  channelAutoImport     Boolean  @default(true)
+  channelAutoImport      Boolean  @default(true)
   /// Automatic payment checking (ShegerPay). Off by default: payments are confirmed manually.
-  autoVerifyPayments    Boolean  @default(false)
+  autoVerifyPayments     Boolean  @default(false)
   /// Provider API key set by the owner (falls back to SHEGERPAY_API_KEY). Never sent to the browser.
-  paymentVerifyKey      String?
-  channelChatId         String?
-  adminChatId           String?
+  paymentVerifyKey       String?
+  channelChatId          String?
+  adminChatId            String?
   /// Evening summary sent to the order-alerts chat
-  dailyReport           Boolean  @default(true)
+  dailyReport            Boolean  @default(true)
   /// Hour (Addis Ababa time, 0–23) the daily report is sent
-  reportHour            Int      @default(21)
+  reportHour             Int      @default(21)
   /// Addis date ("YYYY-MM-DD") of the last report sent, so it's sent once even across restarts
-  lastReportDate        String?
+  lastReportDate         String?
   /// One Telegram reminder to signed-in customers who leave items in their bag
-  bagReminders          Boolean  @default(true)
-  updatedAt             DateTime @updatedAt
+  bagReminders           Boolean  @default(true)
+  // Rewards — off until the owner turns them on (they cost money)
+  /// Customers earn shop credit on received orders (percent of what they paid)
+  loyaltyEnabled         Boolean  @default(false)
+  loyaltyPercent         Int      @default(2)
+  /// Invite a friend: friend gets ETB off the first order, inviter gets ETB credit once it is received
+  referralEnabled        Boolean  @default(false)
+  referralReward         Int      @default(500)
+  referralFriendDiscount Int      @default(500)
+  referralMinSubtotal    Int      @default(3000)
+  /// Credit can pay at most this share of an order
+  creditMaxPercent       Int      @default(50)
+  updatedAt              DateTime @updatedAt
 }
 
 /// The bag of a signed-in customer, kept on the server so a reminder can be sent if it's left behind.
@@ -526,4 +553,81 @@ model CartSnapshot {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([updatedAt])
+}
+
+// ─── Discounts & rewards ─────────────────────────────────
+
+enum PromoType {
+  PERCENT
+  FIXED
+  GIFT
+}
+
+/// A campaign (automatic, no code) or a promo code. One promotion per order: the best one applies.
+model Promotion {
+  id             String    @id @default(cuid())
+  name           String
+  /// null = automatic campaign (applies to everyone while it runs)
+  code           String?   @unique
+  type           PromoType
+  /// percent (PERCENT) or ETB (FIXED)
+  value          Int       @default(0)
+  /// GIFT: what the customer gets ("Free perfume sample")
+  giftText       String?
+  minSubtotal    Int       @default(0)
+  /// limit to one category (slug), null = everything
+  categorySlug   String?
+  startsAt       DateTime?
+  endsAt         DateTime?
+  isActive       Boolean   @default(true)
+  maxUses        Int?
+  usedCount      Int       @default(0)
+  onePerCustomer Boolean   @default(true)
+  /// Shown at the top of the shop while an automatic campaign runs
+  bannerEn       String?
+  bannerAm       String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  orders Order[]
+}
+
+/// "Complete the look": products bought together get a discount.
+model Bundle {
+  id              String       @id @default(cuid())
+  name            String
+  nameAm          String?
+  discountPercent Int
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  items           BundleItem[]
+}
+
+model BundleItem {
+  bundleId  String
+  productId String
+  sortOrder Int    @default(0)
+
+  bundle  Bundle  @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([bundleId, productId])
+  @@index([productId])
+}
+
+/// Shop credit ledger (ETB). Balance = sum of amounts. One entry per (user, order, reason) so awards are never doubled.
+model CreditEntry {
+  id        String   @id @default(cuid())
+  userId    String
+  amount    Int
+  /// loyalty | referral | redeem | refund | adjust
+  reason    String
+  orderId   String?
+  note      String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orderId, reason])
+  @@index([userId, createdAt])
 }

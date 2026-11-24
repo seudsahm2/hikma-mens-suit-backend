@@ -39,6 +39,10 @@ function adminCardText(o: FullOrder, footer?: string) {
         `• ${escapeHtml(i.productName)}${i.size ? ` · ${escapeHtml(i.size)}` : ''}${i.color ? ` · ${escapeHtml(i.color)}` : ''} × ${i.quantity}`,
     ),
     '',
+    o.discountTotal > 0
+      ? `🏷 Discounts: −${birr(o.discountTotal)} (${((o.discounts as { label: string }[] | null) ?? []).map((d) => escapeHtml(d.label)).join(', ')})`
+      : '',
+    o.giftNote ? `🎁 <b>Add gift:</b> ${escapeHtml(o.giftNote)}` : '',
     `<b>Total:</b> ${birr(o.total)}${o.deliveryFee === null ? ' + delivery (by phone)' : ''}`,
     `<b>Due now:</b> ${birr(o.amountDue)}${o.isDeposit ? ' (deposit)' : ''}`,
     `<b>Payment:</b> ${escapeHtml(o.paymentLabel ?? '-')} — ${PAYMENT_LABEL[o.paymentStatus]}`,

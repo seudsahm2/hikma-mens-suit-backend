@@ -9,6 +9,8 @@ import { notifyOrderEvent } from '../telegram/notify';
 import { onStockRestored } from '../alerts/backInStock';
 import { canMoveTo, isFinalStatus, STATUS_LABEL } from './rules';
 import { mergeSizeProfile } from '../../lib/sizeProfile';
+import { creditBalance, quote, type DiscountLine } from '../pricing/pricing';
+import { onOrderCancelled, onOrderReceived, safely } from '../pricing/rewards';
 export { canMoveTo, isFinalStatus, STATUS_LABEL } from './rules';
 
 // ─── Serialisation ───────────────────────────────────────
@@ -34,6 +36,10 @@ export function serializeOrder(o: OrderWithRelations, opts: { staff?: boolean } 
       lng: o.lng,
     },
     subtotal: o.subtotal,
+    discountTotal: o.discountTotal,
+    discounts: (o.discounts as DiscountLine[] | null) ?? [],
+    giftNote: o.giftNote,
+    creditUsed: o.creditUsed,
     deliveryFee: o.deliveryFee,
     total: o.total,
     amountDue: o.amountDue,
@@ -98,6 +104,10 @@ export interface CreateOrderInput {
   payDeposit: boolean;
   note?: string;
   source: OrderSource;
+  /** promo code or a friend's invite code */
+  code?: string;
+  /** pay part with Hikma credit */
+  useCredit?: boolean;
 }
 
 export async function createOrder(user: User | null, input: CreateOrderInput, actorId?: string) {
@@ -144,8 +154,17 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
     };
   });
 
+  // Discounts: bundles, one promotion, credit — the same calculation as the checkout quote
+  const priced = await quote(
+    variants.map((v) => ({ variantId: v.id, productId: v.productId, categorySlug: v.product.category.slug, unitPrice: v.price ?? v.product.basePrice, quantity: qty.get(v.id)! })),
+    { user, code: input.code, useCredit: input.useCredit },
+  );
+  if (input.code && !priced.codeApplied && priced.codeError && priced.codeError !== 'A better offer is already applied') {
+    throw badRequest(priced.codeError, 'CODE');
+  }
+
   const deliveryFee = delivery.fee;
-  const total = subtotal + (deliveryFee ?? 0);
+  const total = priced.itemsTotal + (deliveryFee ?? 0);
   const isDeposit = Boolean(input.payDeposit && settings.partialPaymentEnabled && payment.id !== 'cash');
   const amountDue = isDeposit ? Math.ceil((total * settings.depositPercent) / 100) : total;
 
@@ -160,6 +179,21 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
         const sizeColor = [line.size, line.color].filter(Boolean).join(' / ');
         throw conflict(`${line.productName}${sizeColor ? ` (${sizeColor})` : ''} is out of stock`, 'OUT_OF_STOCK');
       }
+    }
+
+    // A limited promotion is counted in the same transaction, so it can't be used past its limit
+    if (priced.promotion) {
+      const p = await tx.promotion.findUniqueOrThrow({ where: { id: priced.promotion.id } });
+      const used = await tx.promotion.updateMany({
+        where: { id: p.id, ...(p.maxUses !== null ? { usedCount: { lt: p.maxUses } } : {}) },
+        data: { usedCount: { increment: 1 } },
+      });
+      if (!used.count) throw conflict('This offer has just run out — please try again', 'PROMO_ENDED');
+    }
+    // Credit: lock this customer's ledger so two orders can't spend the same credit
+    if (priced.creditUsed > 0 && user) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${user.id}))`;
+      if ((await creditBalance(user.id, tx)) < priced.creditUsed) throw conflict('Your credit changed — please review your order', 'CREDIT');
     }
 
     const created = await tx.order.create({
@@ -178,6 +212,12 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
         lat: input.lat,
         lng: input.lng,
         subtotal,
+        discountTotal: priced.discountTotal,
+        discounts: priced.discounts as unknown as Prisma.InputJsonValue,
+        giftNote: priced.giftNote,
+        promotionId: priced.promotion?.id ?? null,
+        creditUsed: priced.creditUsed,
+        referrerId: priced.referrerId,
         deliveryFee,
         total,
         costTotal,
@@ -195,6 +235,9 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
     await tx.stockMovement.createMany({
       data: lines.map((l) => ({ variantId: l.variantId, delta: -l.quantity, reason: 'ORDER' as const, orderId: created.id, actorId })),
     });
+    if (priced.creditUsed > 0 && user) {
+      await tx.creditEntry.create({ data: { userId: user.id, amount: -priced.creditUsed, reason: 'redeem', orderId: created.id, note: created.orderNumber } });
+    }
     return created;
   });
 
@@ -214,6 +257,10 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
       .catch(() => prisma.user.update({ where: { id: user.id }, data }).catch(() => undefined));
   }
 
+  // Remember who invited this customer (first time only)
+  if (user && priced.referrerId && !user.referredById) {
+    void prisma.user.updateMany({ where: { id: user.id, referredById: null }, data: { referredById: priced.referrerId } }).catch(() => undefined);
+  }
   // The bag became an order: no 'you left something in your bag' reminder
   if (user) void prisma.cartSnapshot.deleteMany({ where: { userId: user.id } }).catch(() => undefined);
 
@@ -386,7 +433,11 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
     return tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   });
   notifyOrderEvent(orderId, 'status');
-  if (status === 'CANCELLED') onStockRestored(order.items.map((i) => i.variantId));
+  if (status === 'CANCELLED') {
+    onStockRestored(order.items.map((i) => i.variantId));
+    safely(() => onOrderCancelled(orderId), 'credit refund');
+  }
+  if (delivered) safely(() => onOrderReceived(orderId), 'rewards');
   return updated;
 }
 
