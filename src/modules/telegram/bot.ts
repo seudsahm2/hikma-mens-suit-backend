@@ -94,16 +94,42 @@ if (bot) {
     );
   });
 
-  // Order alerts: the dashboard shows a code; the owner sends "/link CODE" in a private chat with the bot
-  // (alerts come to that person) or in a staff group (alerts come to the group).
+  // "/link CODE" connects a chat to the shop. grammY delivers commands from private chats, groups AND
+  // channel posts to this one handler, so the purpose is decided by where it was sent:
+  //   channel              → product posts go to this channel   (bot must be a channel admin)
+  //   private chat / group → new-order alerts go here
   bot.command('link', async (ctx) => {
-    const purpose = await consumeLinkCode(String(ctx.match ?? ''));
-    if (!purpose) {
-      await ctx.reply('⚠️ That code is wrong or expired. Get a new one in Admin → Settings → Telegram.');
+    const isChannel = ctx.chat.type === 'channel';
+    const result = await consumeLinkCode(String(ctx.match ?? ''), isChannel ? 'channel' : 'admin');
+
+    if (isChannel) {
+      // Keep the channel clean: remove the /link post, show a short note that removes itself
+      const postId = ctx.channelPost?.message_id;
+      if (postId) await ctx.api.deleteMessage(ctx.chat.id, postId).catch(() => undefined);
+      let text: string;
+      if (result.ok) {
+        await prisma.settings.upsert({
+          where: { id: 'default' },
+          create: { id: 'default', channelChatId: String(ctx.chat.id) },
+          update: { channelChatId: String(ctx.chat.id) },
+        });
+        text = '✅ Channel connected to the Hikma shop.';
+      } else if (result.reason === 'wrong_place') {
+        text = 'ℹ️ That code is for order alerts. Send it to the bot in a private chat instead.';
+      } else {
+        text = '⚠️ That code is wrong or expired. Get a new one in Admin → Settings → Telegram.';
+      }
+      const note = await ctx.api.sendMessage(ctx.chat.id, text).catch(() => null);
+      if (note) setTimeout(() => void ctx.api.deleteMessage(ctx.chat.id, note.message_id).catch(() => undefined), 15_000);
       return;
     }
-    if (purpose === 'channel') {
-      await ctx.reply('ℹ️ This code is for the channel. Post it in the channel instead (the bot must be a channel admin).');
+
+    if (!result.ok) {
+      await ctx.reply(
+        result.reason === 'wrong_place'
+          ? 'ℹ️ That code is for the channel. Post it in the channel (the bot must be a channel admin). The code still works.'
+          : '⚠️ That code is wrong or expired. Get a new one in Admin → Settings → Telegram.',
+      );
       return;
     }
     await prisma.settings.upsert({
@@ -114,22 +140,6 @@ if (bot) {
     await ctx.reply(ctx.chat.type === 'private' ? '✅ New orders will now arrive in this chat.' : '✅ This group will now receive new orders.');
   });
 
-  // Channel: the owner posts "/link CODE" in the channel; the bot must be an admin there.
-  bot.on('channel_post:text', async (ctx) => {
-    const m = ctx.channelPost.text.trim().match(/^\/link(?:@\w+)?\s+([A-Za-z0-9]{6})\b/);
-    if (!m) return;
-    const purpose = await consumeLinkCode(m[1]!);
-    await ctx.api.deleteMessage(ctx.chat.id, ctx.channelPost.message_id).catch(() => undefined);
-    if (purpose !== 'channel') return;
-    await prisma.settings.upsert({
-      where: { id: 'default' },
-      create: { id: 'default', channelChatId: String(ctx.chat.id) },
-      update: { channelChatId: String(ctx.chat.id) },
-    });
-    // Short confirmation that removes itself
-    const note = await ctx.api.sendMessage(ctx.chat.id, '✅ Channel connected to the Hikma shop.').catch(() => null);
-    if (note) setTimeout(() => void ctx.api.deleteMessage(ctx.chat.id, note.message_id).catch(() => undefined), 15_000);
-  });
 
   // Admin order actions from the group card: "o:<orderId>:<action>"
   bot.callbackQuery(/^o:([a-z0-9]+):([A-Za-z_]+)$/, async (ctx) => {
