@@ -75,7 +75,20 @@ async function main() {
 
   const info = await bot.api.getWebhookInfo();
   console.log(`✓ @${me.username} configured`);
-  console.log(`  webhook: ${info.url}`);
+  // Don't print the secret part of the webhook address
+  console.log(`  webhook: ${(info.url ?? '').replace(/[^/]+$/, '••••••')}`);
+  if (info.last_error_message) console.log(`  last delivery error: ${info.last_error_message}`);
+
+  // Check that the server actually has this webhook path (it only does when its own
+  // TELEGRAM_WEBHOOK_SECRET and TELEGRAM_BOT_TOKEN match this machine's .env)
+  const probe = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => null);
+  if (!probe) console.log('  ⚠ could not reach the API to verify the webhook');
+  else if (probe.status === 404)
+    console.log(
+      '  ✗ The server has no route for this webhook. In Render → Environment, set TELEGRAM_WEBHOOK_SECRET to the same value as\n' +
+        '    this .env, and TELEGRAM_BOT_TOKEN to this bot’s token. Wait for the redeploy, then run this script again.',
+    );
+  else console.log('  ✓ server is listening for this webhook');
   console.log(`  menu button → ${env.clientUrl}`);
 }
 
