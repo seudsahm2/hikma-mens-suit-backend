@@ -49,8 +49,10 @@ model User {
   cart         CartSnapshot?
   reviews      Review[]
   credits      CreditEntry[]
+  wishlist     WishlistItem[]
+  exchanges    ExchangeRequest[]
   /// Personal invite code (created the first time they open "Invite a friend")
-  referralCode String?         @unique
+  referralCode String?           @unique
   /// Who invited this customer (set by their first order with an invite code)
   referredById String?
   /// Size memory + size helper answers: { height?, weight?, fit?, sizes: { <categorySlug>: <size> } }
@@ -191,6 +193,7 @@ model Product {
   proofs      ProofPhoto[]
   reviews     Review[]
   bundleItems BundleItem[]
+  wishlisted  WishlistItem[]
 
   @@index([status, categoryId])
   @@index([createdAt])
@@ -312,10 +315,10 @@ enum OrderSource {
 }
 
 model Order {
-  id               String        @id @default(cuid())
-  orderNumber      String        @unique
+  id               String            @id @default(cuid())
+  orderNumber      String            @unique
   userId           String?
-  source           OrderSource   @default(WEB)
+  source           OrderSource       @default(WEB)
   customerName     String
   customerPhone    String
   telegramChatId   BigInt?
@@ -329,34 +332,35 @@ model Order {
   subtotal         Int
   deliveryFee      Int?
   total            Int
-  costTotal        Int           @default(0)
+  costTotal        Int               @default(0)
   // Amount the customer must pay now (full total, or the deposit)
   amountDue        Int
-  amountPaid       Int           @default(0)
-  isDeposit        Boolean       @default(false)
+  amountPaid       Int               @default(0)
+  isDeposit        Boolean           @default(false)
   paymentMethodId  String?
   paymentLabel     String?
   transactionRef   String?
   paymentProofKey  String?
-  paymentStatus    PaymentStatus @default(UNPAID)
-  status           OrderStatus   @default(PENDING)
+  paymentStatus    PaymentStatus     @default(UNPAID)
+  status           OrderStatus       @default(PENDING)
   note             String?
   /// Result of the last automatic payment check or a duplicate-reference warning (shown to staff)
   paymentCheck     String?
   /// When the customer was asked (on Telegram) to review this order
   reviewAskedAt    DateTime?
   /// Discounts (all computed on the server): total and breakdown [{ kind, label, amount, code? }]
-  discountTotal    Int           @default(0)
+  discountTotal    Int               @default(0)
   discounts        Json?
   /// Free gift promised by a promotion ("Free perfume sample") — staff add it to the parcel
   giftNote         String?
   promotionId      String?
-  creditUsed       Int           @default(0)
+  creditUsed       Int               @default(0)
   /// Customer who invited the buyer (referral reward goes to them once this order is received)
   referrerId       String?
-  promotion        Promotion?    @relation(fields: [promotionId], references: [id])
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  promotion        Promotion?        @relation(fields: [promotionId], references: [id])
+  exchanges        ExchangeRequest[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
   user   User?        @relation(fields: [userId], references: [id])
   items  OrderItem[]
@@ -538,6 +542,8 @@ model Settings {
   referralMinSubtotal    Int      @default(3000)
   /// Credit can pay at most this share of an order
   creditMaxPercent       Int      @default(50)
+  /// Customers can ask for a size exchange this many days after receiving an order
+  exchangeDays           Int      @default(3)
   updatedAt              DateTime @updatedAt
 }
 
@@ -630,4 +636,43 @@ model CreditEntry {
 
   @@unique([userId, orderId, reason])
   @@index([userId, createdAt])
+}
+
+// ─── After the purchase ──────────────────────────────────
+
+/// Saved items. priceSeen = the price when saved (or last told), so a price drop is announced once.
+model WishlistItem {
+  userId    String
+  productId String
+  priceSeen Int
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([userId, productId])
+  @@index([productId])
+}
+
+/// "Wrong size? Request exchange" from a received order.
+model ExchangeRequest {
+  id        String   @id @default(cuid())
+  orderId   String
+  userId    String
+  /// [{ orderItemId, name, size, wantSize }]
+  items     Json
+  /// too_small | too_big | defect | other
+  reason    String
+  note      String?
+  /// requested | approved | declined | done
+  status    String   @default("requested")
+  staffNote String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([orderId])
 }

@@ -12,6 +12,7 @@ import { serializeCategory, serializeImage } from '../catalog/serialize';
 import { previewCaption, publishToChannel } from '../telegram/publish';
 import { startBroadcast, subscriberCount } from '../telegram/broadcast';
 import { normalizeTikTokUrl } from '../../lib/tiktok';
+import { checkPriceDrop } from '../after/wishlist';
 import { imageUrls } from '../../lib/storage';
 
 export const adminProductsRouter = Router();
@@ -194,6 +195,7 @@ adminProductsRouter.put(
       },
       include,
     });
+    void checkPriceDrop(p.id); // tell customers who saved it if it got cheaper
     res.json({ product: serializeAdminProduct(p) });
   }),
 );
@@ -304,6 +306,7 @@ adminProductsRouter.put(
     const p = await prisma.product.findUniqueOrThrow({ where: { id: productId }, include });
     // Anyone waiting for a size that now has stock gets a Telegram message
     onStockRestored(p.variants.filter((v) => v.stock > 0).map((v) => v.id));
+    void checkPriceDrop(p.id);
     res.json({ product: serializeAdminProduct(p) });
   }),
 );

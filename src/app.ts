@@ -24,6 +24,8 @@ import { cartRouter } from './modules/cart/cart.routes';
 import { adminReviewsRouter, reviewsRouter } from './modules/reviews/reviews.routes';
 import { pricingRouter } from './modules/pricing/pricing.routes';
 import { adminPromotionsRouter } from './modules/admin/promotions.routes';
+import { wishlistRouter } from './modules/after/wishlist';
+import { adminExchangesRouter, exchangesRouter } from './modules/after/exchanges';
 
 installBigIntJson();
 
@@ -84,6 +86,9 @@ export function createApp() {
   app.use('/api/cart', cartRouter);
   app.use('/api/reviews', reviewsRouter);
   app.use('/api', pricingRouter);
+  app.use('/api/wishlist', wishlistRouter);
+  app.use('/api/exchanges', exchangesRouter);
+  app.use('/api/admin/exchanges', adminExchangesRouter);
   app.use('/api/admin/reviews', adminReviewsRouter);
   app.use('/api/admin/products', requireStaff, adminProductsRouter);
   app.use('/api/admin/orders', requireStaff, adminOrdersRouter);

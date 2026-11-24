@@ -321,6 +321,7 @@ const settingsSchema = z
     referralFriendDiscount: z.number().int().min(0).max(100_000),
     referralMinSubtotal: z.number().int().min(0).max(10_000_000),
     creditMaxPercent: z.number().int().min(5).max(100),
+    exchangeDays: z.number().int().min(0).max(60),
     depositPercent: z.number().int().min(10).max(90),
     returnPolicyEn: z.string().trim().max(3000),
     returnPolicyAm: z.string().trim().max(3000),
