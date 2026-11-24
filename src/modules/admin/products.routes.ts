@@ -92,6 +92,22 @@ async function uniqueSlug(base: string, excludeId?: string) {
   return `${root}-${Date.now().toString(36)}`;
 }
 
+/**
+ * A product only goes on sale with at least one photo and some stock, so the owner can never
+ * publish something that shows up as "sold out" just because the quantity was forgotten.
+ * Products that are already on sale and sell out later are not affected.
+ */
+async function assertSellable(productId: string | null) {
+  const [images, stock] = productId
+    ? await Promise.all([
+        prisma.productImage.count({ where: { productId } }),
+        prisma.productVariant.aggregate({ where: { productId, isActive: true }, _sum: { stock: true } }),
+      ])
+    : [0, null];
+  if (!images) throw badRequest('Add at least one photo before putting it on sale', 'NO_PHOTO');
+  if (!stock?._sum.stock) throw badRequest('Add how many you have (stock) before putting it on sale', 'NO_STOCK');
+}
+
 // List
 adminProductsRouter.get(
   '/',
@@ -145,6 +161,7 @@ adminProductsRouter.post(
   validate(productSchema),
   ah(async (req, res) => {
     const { brandName, ...data } = req.body as z.infer<typeof productSchema>;
+    if (data.status === 'ACTIVE') await assertSellable(null); // new products have no photos yet: create, add photos + stock, then activate
     const p = await prisma.product.create({
       data: { ...data, slug: await uniqueSlug(data.nameEn), brandId: await resolveBrandId(brandName) },
       include,
@@ -160,6 +177,7 @@ adminProductsRouter.put(
     const { brandName, ...data } = req.body as z.infer<typeof productSchema>;
     const existing = await prisma.product.findUnique({ where: { id: req.params.id } });
     if (!existing) throw notFound('Product not found');
+    if (data.status === 'ACTIVE' && existing.status !== 'ACTIVE') await assertSellable(existing.id);
     const p = await prisma.product.update({
       where: { id: existing.id },
       data: {
@@ -178,7 +196,10 @@ adminProductsRouter.patch(
   '/:id/status',
   validate(z.object({ status: z.enum(['DRAFT', 'ACTIVE', 'ARCHIVED']) })),
   ah(async (req, res) => {
-    const p = await prisma.product.update({ where: { id: req.params.id }, data: { status: req.body.status }, include });
+    const existing = await prisma.product.findUnique({ where: { id: req.params.id } });
+    if (!existing) throw notFound('Product not found');
+    if (req.body.status === 'ACTIVE' && existing.status !== 'ACTIVE') await assertSellable(existing.id);
+    const p = await prisma.product.update({ where: { id: existing.id }, data: { status: req.body.status }, include });
     res.json({ product: serializeAdminProduct(p) });
   }),
 );
