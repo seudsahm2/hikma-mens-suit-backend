@@ -1,11 +1,13 @@
-import type { Brand, Category, Product, ProductImage, ProductVariant } from '@prisma/client';
+import type { Brand, Category, Product, ProductImage, ProductVariant, ProofPhoto } from '@prisma/client';
 import { imageUrls } from '../../lib/storage';
+import { tikTokVideoId } from '../../lib/tiktok';
 
 type FullProduct = Product & {
   category: Category;
   brand: Brand | null;
   images: ProductImage[];
   variants: ProductVariant[];
+  proofs: ProofPhoto[];
 };
 
 /** Stock shown to customers is capped so exact inventory isn't exposed. */
@@ -67,6 +69,9 @@ export function serializeProductCard(p: FullProduct) {
     inStock: p.variants.some((v) => v.isActive && v.stock > 0),
     colors: uniqueColors(p.variants),
     images: sorted.slice(0, 2).map(serializeImage),
+    /** Owner added proof photos (box, tags, receipt) */
+    original: p.proofs.length > 0,
+    rating: p.ratingCount ? { average: Math.round((p.ratingAvg ?? 0) * 10) / 10, count: p.ratingCount } : null,
   };
 }
 
@@ -97,6 +102,8 @@ export function serializeProduct(p: FullProduct) {
     material: p.material,
     fit: p.fit,
     tikTokUrl: p.tikTokUrl,
+    tikTokVideoId: tikTokVideoId(p.tikTokUrl),
+    proofs: [...p.proofs].sort((a, b) => a.sortOrder - b.sortOrder).map((x) => ({ id: x.id, label: x.label, urls: imageUrls(x.key) })),
     sizes,
     variants,
     fragrance:
@@ -118,4 +125,5 @@ export const productInclude = {
   brand: true,
   images: true,
   variants: true,
+  proofs: true,
 } as const;

@@ -20,33 +20,36 @@ enum Role {
 }
 
 model User {
-  id               String   @id @default(cuid())
-  role             Role     @default(CUSTOMER)
+  id               String    @id @default(cuid())
+  role             Role      @default(CUSTOMER)
   fullName         String
-  phone            String?  @unique
+  phone            String?   @unique
   // Customers sign in with Telegram
-  telegramId       BigInt?  @unique
+  telegramId       BigInt?   @unique
   telegramUsername String?
   photoUrl         String?
-  languageCode     String   @default("en")
+  languageCode     String    @default("en")
   // Staff (OWNER / ADMIN) sign in with phone + password
   passwordHash     String?
-  isActive         Boolean  @default(true)
+  isActive         Boolean   @default(true)
   // Address remembered for the next checkout
   city             String?
   area             String?
   landmark         String?
   /// Opted in to new-arrival announcements on Telegram
-  newsOptIn        Boolean  @default(false)
+  newsOptIn        Boolean   @default(false)
   newsOptInAt      DateTime?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   orders      Order[]
   orderEvents OrderEvent[]
   stockMoves  StockMovement[]
   stockAlerts StockAlert[]
   cart        CartSnapshot?
+  reviews     Review[]
+  /// Size memory + size helper answers: { height?, weight?, fit?, sizes: { <categorySlug>: <size> } }
+  sizeProfile Json?
 }
 
 /// "Notify me when back": one row per customer per sold-out size/colour.
@@ -137,45 +140,51 @@ model Brand {
 }
 
 model Product {
-  id             String        @id @default(cuid())
-  slug           String        @unique
-  nameEn         String
-  nameAm         String?
-  descriptionEn  String?
-  descriptionAm  String?
-  categoryId     String
-  brandId        String?
-  origin         String?
-  material       String?
-  fit            String?
-  basePrice      Int
-  compareAtPrice Int?
-  costPrice      Int?
-  status         ProductStatus @default(DRAFT)
-  isFeatured     Boolean       @default(false)
-  isNewArrival   Boolean       @default(true)
-  badge          String?
-  tags           String[]
+  id              String        @id @default(cuid())
+  slug            String        @unique
+  nameEn          String
+  nameAm          String?
+  descriptionEn   String?
+  descriptionAm   String?
+  categoryId      String
+  brandId         String?
+  origin          String?
+  material        String?
+  fit             String?
+  basePrice       Int
+  compareAtPrice  Int?
+  costPrice       Int?
+  status          ProductStatus @default(DRAFT)
+  isFeatured      Boolean       @default(false)
+  isNewArrival    Boolean       @default(true)
+  badge           String?
+  tags            String[]
   // Fragrance only
-  concentration  String?
-  volumeMl       Int?
-  scentFamily    String?
-  notesTop       String[]
-  notesHeart     String[]
-  notesBase      String[]
+  concentration   String?
+  volumeMl        Int?
+  scentFamily     String?
+  notesTop        String[]
+  notesHeart      String[]
+  notesBase       String[]
   // Social
   tikTokUrl       String?
   telegramPostUrl String?
   // Source post id when imported from the Telegram channel export
-  importRef       String?      @unique
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  importRef       String?       @unique
+  /// Average of published reviews (kept in sync when reviews change) — cheap to show on cards
+  ratingAvg       Float?
+  ratingCount     Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
-  category Category         @relation(fields: [categoryId], references: [id])
-  brand    Brand?           @relation(fields: [brandId], references: [id])
-  images   ProductImage[]
-  variants ProductVariant[]
+  category   Category         @relation(fields: [categoryId], references: [id])
+  brand      Brand?           @relation(fields: [brandId], references: [id])
+  images     ProductImage[]
+  variants   ProductVariant[]
   broadcasts Broadcast[]
+  /// "Original" proof photos (box, tags, receipt). Any proof photo = Original badge.
+  proofs     ProofPhoto[]
+  reviews    Review[]
 
   @@index([status, categoryId])
   @@index([createdAt])
@@ -195,6 +204,58 @@ model ProductImage {
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@index([productId, sortOrder])
+}
+
+/// Photos proving the product is original (box, tags, purchase receipt). Kept apart from the
+/// product photos so they never appear in the gallery, on cards or in channel posts.
+model ProofPhoto {
+  id        String   @id @default(cuid())
+  productId String
+  key       String
+  width     Int?
+  height    Int?
+  /// box | tag | receipt | other
+  label     String   @default("other")
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, sortOrder])
+}
+
+/// Customer review — only from someone who received the product (delivered / picked up order).
+model Review {
+  id        String   @id @default(cuid())
+  productId String
+  userId    String
+  orderId   String
+  rating    Int
+  text      String?
+  /// size they bought, shown as "Bought: 50"
+  size      String   @default("")
+  /// published | hidden (hidden by staff)
+  status    String   @default("published")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  photos  ReviewPhoto[]
+
+  @@unique([userId, productId])
+  @@index([productId, status, createdAt])
+}
+
+model ReviewPhoto {
+  id        String @id @default(cuid())
+  reviewId  String
+  key       String
+  width     Int?
+  height    Int?
+  sortOrder Int    @default(0)
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
 }
 
 model ProductVariant {
@@ -276,6 +337,8 @@ model Order {
   note             String?
   /// Result of the last automatic payment check or a duplicate-reference warning (shown to staff)
   paymentCheck     String?
+  /// When the customer was asked (on Telegram) to review this order
+  reviewAskedAt    DateTime?
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
@@ -306,12 +369,12 @@ model OrderItem {
 }
 
 model OrderEvent {
-  id         String   @id @default(cuid())
-  orderId    String
-  type       String
-  message    String?
-  actorId    String?
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  orderId   String
+  type      String
+  message   String?
+  actorId   String?
+  createdAt DateTime @default(now())
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
   actor User? @relation(fields: [actorId], references: [id])
@@ -346,7 +409,7 @@ model StockMovement {
 model PaymentMethod {
   id            String  @id // telebirr, cbe, mpesa, ...
   name          String
-  kind          String  // "wallet" | "bank"
+  kind          String // "wallet" | "bank"
   accountName   String  @default("")
   accountNumber String  @default("")
   isEnabled     Boolean @default(false)
@@ -354,16 +417,16 @@ model PaymentMethod {
 }
 
 model DeliveryOption {
-  id          String  @id // addis, regional, pickup
-  nameEn      String
-  nameAm      String
-  noteEn      String  @default("")
-  noteAm      String  @default("")
+  id           String  @id // addis, regional, pickup
+  nameEn       String
+  nameAm       String
+  noteEn       String  @default("")
+  noteAm       String  @default("")
   // null = fee is confirmed by phone
-  fee         Int?
+  fee          Int?
   needsAddress Boolean @default(true)
-  isEnabled   Boolean @default(true)
-  sortOrder   Int     @default(0)
+  isEnabled    Boolean @default(true)
+  sortOrder    Int     @default(0)
 }
 
 /// Website "sign in through the bot" requests. Stored in the database (not memory) so they survive
@@ -412,43 +475,43 @@ model LinkCode {
 }
 
 model Settings {
-  id                   String   @id @default("default")
-  storeName            String   @default("Hikma Men's Fashion")
-  phone                String   @default("0955706969")
-  telegramInbox        String   @default("Hikm5506")
-  telegramChannelUrl   String   @default("")
-  tikTokHandle         String   @default("hikutiiiiiiii")
-  addressEn            String   @default("Betel, Yellow Building, opposite MK Building · Shop G2")
-  addressAm            String   @default("ቤተል ቢጫ ፎቅ፣ ፊትለፊት MK ህንፃ፣ ሱቅ ቁጥር G2")
-  mapLat               Float?
-  mapLng               Float?
-  openingHours         String   @default("Mon–Sun · 8:30 – 21:00")
-  announcementEn       String   @default("")
-  announcementAm       String   @default("")
-  heroVideoUrl         String?
-  heroImageUrl         String?
-  partialPaymentEnabled Boolean @default(true)
-  depositPercent       Int      @default(50)
-  returnPolicyEn       String   @default("")
-  returnPolicyAm       String   @default("")
+  id                    String   @id @default("default")
+  storeName             String   @default("Hikma Men's Fashion")
+  phone                 String   @default("0955706969")
+  telegramInbox         String   @default("Hikm5506")
+  telegramChannelUrl    String   @default("")
+  tikTokHandle          String   @default("hikutiiiiiiii")
+  addressEn             String   @default("Betel, Yellow Building, opposite MK Building · Shop G2")
+  addressAm             String   @default("ቤተል ቢጫ ፎቅ፣ ፊትለፊት MK ህንፃ፣ ሱቅ ቁጥር G2")
+  mapLat                Float?
+  mapLng                Float?
+  openingHours          String   @default("Mon–Sun · 8:30 – 21:00")
+  announcementEn        String   @default("")
+  announcementAm        String   @default("")
+  heroVideoUrl          String?
+  heroImageUrl          String?
+  partialPaymentEnabled Boolean  @default(true)
+  depositPercent        Int      @default(50)
+  returnPolicyEn        String   @default("")
+  returnPolicyAm        String   @default("")
   // Telegram
   /// New posts in the linked channel become draft products
-  channelAutoImport    Boolean  @default(true)
+  channelAutoImport     Boolean  @default(true)
   /// Automatic payment checking (ShegerPay). Off by default: payments are confirmed manually.
-  autoVerifyPayments   Boolean  @default(false)
+  autoVerifyPayments    Boolean  @default(false)
   /// Provider API key set by the owner (falls back to SHEGERPAY_API_KEY). Never sent to the browser.
-  paymentVerifyKey     String?
-  channelChatId        String?
-  adminChatId          String?
+  paymentVerifyKey      String?
+  channelChatId         String?
+  adminChatId           String?
   /// Evening summary sent to the order-alerts chat
-  dailyReport          Boolean  @default(true)
+  dailyReport           Boolean  @default(true)
   /// Hour (Addis Ababa time, 0–23) the daily report is sent
-  reportHour           Int      @default(21)
+  reportHour            Int      @default(21)
   /// Addis date ("YYYY-MM-DD") of the last report sent, so it's sent once even across restarts
-  lastReportDate       String?
+  lastReportDate        String?
   /// One Telegram reminder to signed-in customers who leave items in their bag
-  bagReminders         Boolean  @default(true)
-  updatedAt            DateTime @updatedAt
+  bagReminders          Boolean  @default(true)
+  updatedAt             DateTime @updatedAt
 }
 
 /// The bag of a signed-in customer, kept on the server so a reminder can be sent if it's left behind.

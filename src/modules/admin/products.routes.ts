@@ -11,6 +11,8 @@ import { validate } from '../../middleware/validate';
 import { serializeCategory, serializeImage } from '../catalog/serialize';
 import { previewCaption, publishToChannel } from '../telegram/publish';
 import { startBroadcast, subscriberCount } from '../telegram/broadcast';
+import { normalizeTikTokUrl } from '../../lib/tiktok';
+import { imageUrls } from '../../lib/storage';
 
 export const adminProductsRouter = Router();
 
@@ -18,6 +20,7 @@ const include = {
   category: true,
   brand: true,
   images: { orderBy: { sortOrder: 'asc' } },
+  proofs: { orderBy: { sortOrder: 'asc' } },
   variants: {
     orderBy: [{ color: 'asc' }, { size: 'asc' }],
     // how many customers are waiting for each sold-out size ("Notify me when back")
@@ -33,6 +36,7 @@ function serializeAdminProduct(p: AdminProduct) {
     category: serializeCategory(p.category),
     brand: p.brand ? { id: p.brand.id, slug: p.brand.slug, name: p.brand.name } : null,
     images: p.images.map(serializeImage),
+    proofs: p.proofs.map((x) => ({ id: x.id, label: x.label, urls: imageUrls(x.key) })),
     totalStock: p.variants.reduce((s, v) => s + (v.isActive ? v.stock : 0), 0),
   };
 }
@@ -161,6 +165,7 @@ adminProductsRouter.post(
   validate(productSchema),
   ah(async (req, res) => {
     const { brandName, ...data } = req.body as z.infer<typeof productSchema>;
+    data.tikTokUrl = await normalizeTikTokUrl(data.tikTokUrl);
     if (data.status === 'ACTIVE') await assertSellable(null); // new products have no photos yet: create, add photos + stock, then activate
     const p = await prisma.product.create({
       data: { ...data, slug: await uniqueSlug(data.nameEn), brandId: await resolveBrandId(brandName) },
@@ -176,6 +181,7 @@ adminProductsRouter.put(
   ah(async (req, res) => {
     const { brandName, ...data } = req.body as z.infer<typeof productSchema>;
     const existing = await prisma.product.findUnique({ where: { id: req.params.id } });
+    if (existing && data.tikTokUrl !== existing.tikTokUrl) data.tikTokUrl = await normalizeTikTokUrl(data.tikTokUrl);
     if (!existing) throw notFound('Product not found');
     if (data.status === 'ACTIVE' && existing.status !== 'ACTIVE') await assertSellable(existing.id);
     const p = await prisma.product.update({
@@ -214,9 +220,12 @@ adminProductsRouter.delete(
       await prisma.product.update({ where: { id }, data: { status: 'ARCHIVED' } });
       return res.json({ archived: true });
     }
-    const images = await prisma.productImage.findMany({ where: { productId: id } });
+    const [images, proofs] = await Promise.all([
+      prisma.productImage.findMany({ where: { productId: id } }),
+      prisma.proofPhoto.findMany({ where: { productId: id } }),
+    ]);
     await prisma.product.delete({ where: { id } });
-    await Promise.all(images.map((i) => deleteImage(i.key)));
+    await Promise.all([...images, ...proofs].map((i) => deleteImage(i.key)));
     res.json({ deleted: true });
   }),
 );
@@ -354,6 +363,41 @@ adminProductsRouter.delete(
     if (!img) throw notFound('Image not found');
     await prisma.productImage.delete({ where: { id: img.id } });
     await deleteImage(img.key);
+    const p = await prisma.product.findUniqueOrThrow({ where: { id: req.params.id }, include });
+    res.json({ product: serializeAdminProduct(p) });
+  }),
+);
+
+// ─── "Original" proof photos ─────────────────────────────
+
+adminProductsRouter.post(
+  '/:id/proofs',
+  imageUpload.array('images', 6),
+  ah(async (req, res) => {
+    const productId = req.params.id!;
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    if (!files.length) throw badRequest('Choose at least one photo', 'NO_FILES');
+    const label = ['box', 'tag', 'receipt'].includes(String(req.body?.label)) ? String(req.body.label) : 'other';
+    const product = await prisma.product.findUnique({ where: { id: productId }, include: { proofs: true } });
+    if (!product) throw notFound('Product not found');
+    if (product.proofs.length + files.length > 8) throw badRequest('Up to 8 proof photos', 'TOO_MANY');
+    let order = product.proofs.reduce((m, i) => Math.max(m, i.sortOrder), -1);
+    for (const file of files) {
+      const saved = await saveImage(file.buffer, 'originals');
+      await prisma.proofPhoto.create({ data: { productId, key: saved.key, width: saved.width, height: saved.height, label, sortOrder: ++order } });
+    }
+    const p = await prisma.product.findUniqueOrThrow({ where: { id: productId }, include });
+    res.status(201).json({ product: serializeAdminProduct(p) });
+  }),
+);
+
+adminProductsRouter.delete(
+  '/:id/proofs/:proofId',
+  ah(async (req, res) => {
+    const proof = await prisma.proofPhoto.findFirst({ where: { id: req.params.proofId, productId: req.params.id } });
+    if (!proof) throw notFound('Photo not found');
+    await prisma.proofPhoto.delete({ where: { id: proof.id } });
+    await deleteImage(proof.key);
     const p = await prisma.product.findUniqueOrThrow({ where: { id: req.params.id }, include });
     res.json({ product: serializeAdminProduct(p) });
   }),

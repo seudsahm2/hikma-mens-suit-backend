@@ -10,6 +10,7 @@ import { ah, badRequest, HttpError, unauthorized } from '../../lib/http';
 import { normalizeEthiopianPhone } from '../../lib/phone';
 import { requireAuth } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
+import { mergeSizeProfile, readSizeProfile } from '../../lib/sizeProfile';
 import { verifyLoginWidget, verifyMiniAppInitData, type TelegramIdentity } from './telegramVerify';
 import { checkLoginToken, createLoginToken, LOGIN_TOKEN_TTL_SECONDS } from './botLogin';
 
@@ -45,6 +46,7 @@ export function publicUser(u: User) {
     area: u.area,
     landmark: u.landmark,
     newsOptIn: u.newsOptIn,
+    sizeProfile: readSizeProfile(u.sizeProfile),
   };
 }
 
@@ -201,10 +203,18 @@ authRouter.patch(
       area: z.string().trim().max(80).optional(),
       landmark: z.string().trim().max(160).optional(),
       newsOptIn: z.boolean().optional(),
+      sizeProfile: z
+        .object({
+          height: z.number().int().min(120).max(230).optional(),
+          weight: z.number().int().min(35).max(250).optional(),
+          fit: z.enum(['slim', 'regular', 'loose']).optional(),
+          sizes: z.record(z.string().max(60), z.string().max(20)).optional(),
+        })
+        .optional(),
     }),
   ),
   ah(async (req, res) => {
-    const { phone, newsOptIn, ...rest } = req.body as { phone?: string; newsOptIn?: boolean } & Record<string, string | undefined>;
+    const { phone, newsOptIn, sizeProfile, ...rest } = req.body as { phone?: string; newsOptIn?: boolean; sizeProfile?: Parameters<typeof mergeSizeProfile>[1] } & Record<string, string | undefined>;
     let normalized: string | undefined;
     if (phone !== undefined && req.user!.role === 'CUSTOMER') {
       const p = normalizeEthiopianPhone(phone);
@@ -217,6 +227,7 @@ authRouter.patch(
         ...rest,
         ...(normalized ? { phone: normalized } : {}),
         ...(newsOptIn !== undefined ? { newsOptIn, newsOptInAt: newsOptIn ? new Date() : null } : {}),
+        ...(sizeProfile ? { sizeProfile: mergeSizeProfile(req.user!.sizeProfile, sizeProfile) } : {}),
       },
     });
     res.json({ user: publicUser(user) });

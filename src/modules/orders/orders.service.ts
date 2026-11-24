@@ -8,6 +8,7 @@ import { canAutoVerify, verifyTransaction } from '../payments/shegerpay';
 import { notifyOrderEvent } from '../telegram/notify';
 import { onStockRestored } from '../alerts/backInStock';
 import { canMoveTo, isFinalStatus, STATUS_LABEL } from './rules';
+import { mergeSizeProfile } from '../../lib/sizeProfile';
 export { canMoveTo, isFinalStatus, STATUS_LABEL } from './rules';
 
 // ─── Serialisation ───────────────────────────────────────
@@ -110,7 +111,7 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
     prisma.paymentMethod.findFirst({ where: { id: input.paymentMethodId, isEnabled: true } }),
     prisma.productVariant.findMany({
       where: { id: { in: [...qty.keys()] } },
-      include: { product: { include: { images: { orderBy: { sortOrder: 'asc' }, take: 1 } } } },
+      include: { product: { include: { images: { orderBy: { sortOrder: 'asc' }, take: 1 }, category: { select: { slug: true } } } } },
     }),
   ]);
 
@@ -200,7 +201,14 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
   // Remember contact + address for next checkout. Outside the transaction: a failure here
   // (e.g. phone already used by another account) must not undo the order.
   if (user?.role === 'CUSTOMER') {
-    const data = { city: input.city ?? user.city, area: input.area ?? user.area, landmark: input.landmark ?? user.landmark };
+    // Remember the size bought per category, so it's pre-selected next time
+    const sizes = Object.fromEntries(variants.filter((v) => v.size).map((v) => [v.product.category.slug, v.size]));
+    const data = {
+      city: input.city ?? user.city,
+      area: input.area ?? user.area,
+      landmark: input.landmark ?? user.landmark,
+      ...(Object.keys(sizes).length ? { sizeProfile: mergeSizeProfile(user.sizeProfile, { sizes }) } : {}),
+    };
     await prisma.user
       .update({ where: { id: user.id }, data: { ...data, ...(user.phone ? {} : { phone: input.customerPhone }) } })
       .catch(() => prisma.user.update({ where: { id: user.id }, data }).catch(() => undefined));

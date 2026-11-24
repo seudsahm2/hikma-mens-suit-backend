@@ -61,7 +61,7 @@ export function imageUrls(key: string): Record<ImageSize, string> {
 }
 
 /** Resizes and stores an image. Returns its key and original dimensions. */
-export async function saveImage(input: Buffer, folder: 'products' | 'proofs' | 'site') {
+export async function saveImage(input: Buffer, folder: 'products' | 'proofs' | 'site' | 'originals' | 'reviews') {
   const key = `${folder}/${randomUUID()}`;
   const base = sharp(input, { failOn: 'none' }).rotate(); // honour EXIF orientation
   const meta = await base.metadata();

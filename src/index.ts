@@ -9,6 +9,7 @@ import { notifyNewDraft } from './modules/telegram/notify';
 import { startBroadcastWorker } from './modules/telegram/broadcast';
 import { startDailyReportWorker } from './modules/reports/dailyReport';
 import { startBagReminderWorker } from './modules/cart/bagReminder';
+import { startReviewRequestWorker } from './modules/reviews/reviews.service';
 
 const app = createApp();
 
@@ -28,6 +29,8 @@ const stopBroadcasts = startBroadcastWorker();
 // Evening summary to the order-alerts chat, and one reminder for bags left behind
 const stopDailyReport = startDailyReportWorker();
 const stopBagReminders = startBagReminderWorker();
+// A day after delivery: "How do you like it? ⭐ Rate it"
+const stopReviewRequests = startReviewRequestWorker();
 
 // Catch a token from another bot early: sign-in links and the Mini App would silently fail
 if (bot) {
@@ -59,6 +62,7 @@ async function shutdown(signal: string) {
   stopBroadcasts();
   stopDailyReport();
   stopBagReminders();
+  stopReviewRequests();
   if (bot && env.TELEGRAM_POLLING) await bot.stop().catch(() => undefined);
   server.close(() => {
     void prisma.$disconnect().finally(() => process.exit(0));
