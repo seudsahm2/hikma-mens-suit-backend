@@ -97,7 +97,8 @@ async function tellStaff(text: string, kb?: InlineKeyboard) {
 /** One-tap "pick another driver" under staff messages (opens the nearest-first list on the bot). */
 const pickAgain = (orderId: string) => new InlineKeyboard().text('🛵 Choose another driver', `o:${orderId}:pick`);
 
-function assertDispatchable(o: { status: string; deliveryOptionId: string }) {
+function assertDispatchable(o: { status: string; deliveryOptionId: string; cancelAt?: Date | null }) {
+  if (o.cancelAt) throw conflict('This order is about to be cancelled — undo the cancel first', 'CANCEL_PENDING');
   if (o.deliveryOptionId === 'pickup') throw conflict('This order is picked up at the shop', 'PICKUP');
   if (['OUT_FOR_DELIVERY', 'DELIVERED', 'PICKED_UP', 'CANCELLED'].includes(o.status)) throw conflict('This order is already on the way or finished', 'FINISHED');
 }
@@ -105,6 +106,47 @@ function assertDispatchable(o: { status: string; deliveryOptionId: string }) {
 /** Keeps the order's Telegram cards in step with the driver state (buttons + driver line). */
 function refreshCards(orderId: string) {
   void import('../telegram/notify').then(({ refreshAdminCards }) => refreshAdminCards(orderId)).catch(() => undefined);
+}
+
+/** Job offer buttons. "Can't now" asks once more (a wrong tap would give the job away). */
+function offerKeyboard(offerId: string) {
+  return new InlineKeyboard()
+    .text('✅ Coming · 15 min', `jo:${offerId}:15`)
+    .text('✅ Coming · 30 min', `jo:${offerId}:30`)
+    .row()
+    .text('❌ Can’t now', `jo:${offerId}:ask`);
+}
+
+/** Driver tapped "Can't now" by mistake: take it back while nobody else has the job. */
+export async function retakeOffer(offerId: string, telegramId: number) {
+  const offer = await prisma.deliveryOffer.findUnique({ where: { id: offerId }, include: { driver: true, order: true } });
+  if (!offer || offer.driver.telegramId?.toString() !== String(telegramId)) return { text: 'This job isn’t yours', ok: false };
+  if (offer.status !== 'declined') return { text: 'Already answered', ok: false };
+  const o = offer.order;
+  if (o.cancelAt || ['OUT_FOR_DELIVERY', 'DELIVERED', 'PICKED_UP', 'CANCELLED'].includes(o.status)) return { text: 'This order isn’t open any more', ok: false };
+  const other = await prisma.deliveryOffer.findFirst({ where: { orderId: o.id, status: { in: ['offered', 'accepted'] } }, include: { driver: true } });
+  if (other) return { text: `Sorry — it already went to another driver`, ok: false };
+  const claimed = await prisma.deliveryOffer.updateMany({
+    where: { id: offerId, status: 'declined' },
+    data: { status: 'offered', respondedAt: null, expiresAt: new Date(Date.now() + OFFER_MINUTES * 60_000) },
+  });
+  if (!claimed.count) return { text: 'Already answered', ok: false };
+  await tellStaff(`↩️ <b>${escapeHtml(offer.driver.name)}</b> changed their mind about <b>${escapeHtml(o.orderNumber)}</b> — answering again.`);
+  refreshCards(o.id);
+  return { text: 'OK — choose when you can come', ok: true };
+}
+
+/** Driver accepted by mistake / something came up: give the job back before the handover. */
+export async function dropAccepted(offerId: string, telegramId: number) {
+  const offer = await prisma.deliveryOffer.findUnique({ where: { id: offerId }, include: { driver: true, order: true } });
+  if (!offer || offer.driver.telegramId?.toString() !== String(telegramId)) return 'This job isn’t yours';
+  if (offer.status !== 'accepted') return offer.status === 'completed' ? 'You already have the items — use “Couldn’t deliver” on the delivery card' : 'Already answered';
+  const claimed = await prisma.deliveryOffer.updateMany({ where: { id: offerId, status: 'accepted' }, data: { status: 'declined', respondedAt: new Date() } });
+  if (!claimed.count) return 'Already answered';
+  await prisma.order.updateMany({ where: { id: offer.orderId, driverId: offer.driverId }, data: { driverId: null } });
+  await tellStaff(`❌ <b>${escapeHtml(offer.driver.name)}</b> can’t come for <b>${escapeHtml(offer.order.orderNumber)}</b> after all.`, pickAgain(offer.orderId));
+  refreshCards(offer.orderId);
+  return 'OK — the shop has been told. Thanks for letting us know.';
 }
 
 /** Sends a job offer to one driver. */
@@ -129,11 +171,7 @@ async function offerTo(orderId: string, driverId: string, auto: boolean) {
       '',
       `Answer within ${OFFER_MINUTES} minutes — otherwise it goes to another driver.`,
     ].join('\n');
-    const kb = new InlineKeyboard()
-      .text('✅ Coming · 15 min', `jo:${offer.id}:15`)
-      .text('✅ Coming · 30 min', `jo:${offer.id}:30`)
-      .row()
-      .text('❌ Can’t now', `jo:${offer.id}:no`);
+    const kb = offerKeyboard(offer.id);
     try {
       const msg = await driverSend(driver, text, { parse_mode: 'HTML', reply_markup: kb });
       if (msg) await prisma.deliveryOffer.update({ where: { id: offer.id }, data: { messageId: msg.message_id } });
@@ -305,7 +343,7 @@ export async function askDriver(orderId: string) {
     .text('🛵 On my way', `dr:${orderId}:way`)
     .text('📵 Customer not answering', `dr:${orderId}:noanswer`)
     .row()
-    .text('⚠️ Can’t deliver', `dv:${orderId}:fail`);
+    .text('⚠️ Can’t deliver', `dv:${orderId}:askfail`);
   await driverSend(order.driver, `❓ The shop is asking about <b>${escapeHtml(order.orderNumber)}</b> — what’s happening?`, { parse_mode: 'HTML', reply_markup: kb });
   return order.driver.name;
 }
@@ -317,10 +355,12 @@ export function startDispatchWorker() {
       const due = await prisma.deliveryOffer.findMany({ where: { status: 'offered', expiresAt: { lt: new Date() } }, select: { id: true }, take: 20 });
       for (const d of due) await expire(d.id);
       await checkLate();
+      // Staff cancels whose undo window ran out
+      await (await import('../orders/orders.service')).commitDueCancels();
     } catch (err) {
       logger.warn({ err }, 'dispatch worker failed');
     }
-  }, 30_000);
+  }, 15_000);
   return () => clearInterval(timer);
 }
 
@@ -362,6 +402,38 @@ if (bot) {
     if (a === 'way') await prisma.deliveryOffer.updateMany({ where: { orderId: order.id, status: 'completed' }, data: { lateAlertAt: null, handedAt: new Date() } }); // remind again later
   });
 
+  bot.callbackQuery(/^jo:([a-z0-9]+):(ask|back|again|askdrop|drop|keep)$/, async (ctx) => {
+    const [, offerId, a] = ctx.match;
+    const sure = (yes: string, yesData: string, backData: string) =>
+      ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard().text(yes, `jo:${offerId}:${yesData}`).row().text('↩️ No, go back', `jo:${offerId}:${backData}`) }).catch(() => undefined);
+    if (a === 'ask') {
+      await ctx.answerCallbackQuery({ text: 'Sure? The job goes to another driver.' });
+      return void (await sure('❌ Yes, I can’t take it', 'no', 'back'));
+    }
+    if (a === 'back') {
+      await ctx.answerCallbackQuery();
+      return void (await ctx.editMessageReplyMarkup({ reply_markup: offerKeyboard(offerId!) }).catch(() => undefined));
+    }
+    if (a === 'askdrop') {
+      await ctx.answerCallbackQuery({ text: 'Sure? The shop will find someone else.' });
+      return void (await sure('❌ Yes, I can’t come', 'drop', 'keep'));
+    }
+    if (a === 'keep') {
+      await ctx.answerCallbackQuery({ text: '👍 Great — see you at the shop' });
+      return void (await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard().text('❌ I can’t come after all', `jo:${offerId}:askdrop`) }).catch(() => undefined));
+    }
+    if (a === 'drop') {
+      const text = await dropAccepted(offerId!, ctx.from.id);
+      await ctx.answerCallbackQuery({ text: text.slice(0, 190), show_alert: true });
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
+      return;
+    }
+    // again: "I can come after all" after declining (only while nobody else has the job)
+    const r = await retakeOffer(offerId!, ctx.from.id);
+    await ctx.answerCallbackQuery({ text: r.text.slice(0, 190), show_alert: !r.ok });
+    await ctx.editMessageReplyMarkup({ reply_markup: r.ok ? offerKeyboard(offerId!) : undefined }).catch(() => undefined);
+  });
+
   bot.callbackQuery(/^jo:([a-z0-9]+):(no|\d{1,3})$/, async (ctx) => {
     const [, offerId, a] = ctx.match;
     const r = await respond(offerId!, ctx.from.id, a === 'no' ? 'no' : Number(a));
@@ -370,7 +442,13 @@ if (bot) {
       await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
       const d = await prisma.driver.findUnique({ where: { telegramId: BigInt(ctx.from.id) } });
       if (d) {
-        await driverSend(d, r.text);
+        // After declining: a way back while nobody else has it. After accepting: a way out before the handover.
+        await driverSend(d, r.text, {
+          reply_markup:
+            r.done === 'declined'
+              ? new InlineKeyboard().text('↩️ I can come after all', `jo:${offerId}:again`)
+              : new InlineKeyboard().text('❌ I can’t come after all', `jo:${offerId}:askdrop`),
+        });
         if (r.done === 'accepted') {
           const s = await shopPoint();
           if (s) await driverSendLocation(d, s.lat, s.lng);

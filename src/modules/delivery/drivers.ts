@@ -58,9 +58,15 @@ export async function sendDriverCard(orderId: string) {
   ]
     .filter(Boolean)
     .join('\n');
-  const kb = new InlineKeyboard().text('✅  Delivered', `dv:${o.id}:done`).text('⚠️  Couldn’t deliver', `dv:${o.id}:fail`);
-  if (map) kb.row().url('🗺  Open map', map);
+  const kb = deliveryKeyboard(o.id, map);
   await driverSend(o.driver, text, { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true } });
+}
+
+/** Delivery card buttons. "Couldn't deliver" asks once more (it alarms the shop). */
+function deliveryKeyboard(orderId: string, map: string | null) {
+  const kb = new InlineKeyboard().text('✅  Delivered', `dv:${orderId}:done`).text('⚠️  Couldn’t deliver', `dv:${orderId}:askfail`);
+  if (map) kb.row().url('🗺  Open map', map);
+  return kb;
 }
 
 async function markDelivered(orderId: string, note: string) {
@@ -254,6 +260,21 @@ export async function linkDriver(ctx: Context, raw: string) {
 }
 
 if (bot) {
+  // Confirm step for "Couldn't deliver" (and the way back)
+  bot.callbackQuery(/^dv:([a-z0-9]+):(askfail|back)$/, async (ctx) => {
+    const [, orderId, a] = ctx.match;
+    if (a === 'askfail') {
+      await ctx.answerCallbackQuery({ text: 'Sure? The shop will be alerted.' });
+      await ctx
+        .editMessageReplyMarkup({ reply_markup: new InlineKeyboard().text('⚠️ Yes, I couldn’t deliver', `dv:${orderId}:fail`).row().text('↩️ No, go back', `dv:${orderId}:back`) })
+        .catch(() => undefined);
+      return;
+    }
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageReplyMarkup({ reply_markup: order ? deliveryKeyboard(order.id, mapLink(order)) : undefined }).catch(() => undefined);
+  });
+
   bot.callbackQuery(/^dv:([a-z0-9]+):(done|fail)$/, async (ctx) => {
     const [, orderId, action] = ctx.match;
     const driver = ctx.from ? await prisma.driver.findUnique({ where: { telegramId: BigInt(ctx.from.id) } }) : null;
@@ -281,6 +302,20 @@ if (bot) {
   });
 
   // Backup: the customer confirms receipt themselves
+  // Customer "I received it" asks once more — it closes the order without the driver's code
+  bot.callbackQuery(/^rc:([a-z0-9]+):(ask|back)$/, async (ctx) => {
+    const [, orderId, a] = ctx.match;
+    await ctx.answerCallbackQuery(a === 'ask' ? { text: 'Is the order in your hands?' } : undefined);
+    await ctx
+      .editMessageReplyMarkup({
+        reply_markup:
+          a === 'ask'
+            ? new InlineKeyboard().text('✅ Yes, I have it', `rc:${orderId}`).row().text('↩️ Not yet', `rc:${orderId}:back`)
+            : new InlineKeyboard().text('✅ I received it', `rc:${orderId}:ask`),
+      })
+      .catch(() => undefined);
+  });
+
   bot.callbackQuery(/^rc:([a-z0-9]+)$/, async (ctx) => {
     const order = await prisma.order.findUnique({ where: { id: ctx.match[1] } });
     if (!order || !ctx.from || order.telegramChatId?.toString() !== String(ctx.from.id)) return void (await ctx.answerCallbackQuery({ text: 'Not your order' }));

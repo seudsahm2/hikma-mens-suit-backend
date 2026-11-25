@@ -331,6 +331,10 @@ model Order {
   cashCollected     Int               @default(0)
   cashDriverId      String?
   cashSettledAt     DateTime?
+  /// staff cancel with an undo window: nothing happens (no messages, no stock) until cancelAt passes
+  cancelAt          DateTime?
+  cancelById        String?
+  cancelNote        String?
   orderNumber       String            @unique
   userId            String?
   source            OrderSource       @default(WEB)

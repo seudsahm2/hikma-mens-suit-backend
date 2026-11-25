@@ -53,6 +53,9 @@ function adminCardText(o: FullOrder, footer?: string) {
     `<b>Payment:</b> ${escapeHtml(o.paymentLabel ?? '-')} — ${PAYMENT_LABEL[o.paymentStatus]}`,
     o.transactionRef ? `<b>Ref:</b> <code>${escapeHtml(o.transactionRef)}</code>` : '',
     driverLine(o),
+    o.cancelAt
+      ? `⏳ <b>Cancelling at ${o.cancelAt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Addis_Ababa' })}</b> — nobody is told until then. Tapped by mistake? ↩️ Undo cancel`
+      : '',
     '',
     `👤 ${escapeHtml(o.customerName)} · <a href="tel:${o.customerPhone}">${o.customerPhone}</a>${
       o.user?.telegramUsername ? ` · @${escapeHtml(o.user.telegramUsername)}` : ''
@@ -81,10 +84,13 @@ function adminKeyboard(o: FullOrder) {
   const offer = o.deliveryOffers?.[0];
   const activeOffer = offer && (offer.status === 'offered' || offer.status === 'accepted') ? offer : null;
 
+  // Cancel counting down: only Undo / Cancel now until it happens
+  if (o.cancelAt) return kb.text('↩️ Undo cancel', `o:${id}:undocancel`).text('✖️ Cancel now', `o:${id}:cancelnow`);
+
   if (o.status === 'PENDING') {
     if (canReviewPayment(o.status, o.paymentStatus) && o.paymentMethodId !== 'cash') {
       kb.text('✅ Payment OK', `o:${id}:verify`);
-      if (o.paymentStatus === 'SUBMITTED') kb.text('⚠️ Reject', `o:${id}:reject`);
+      if (o.paymentStatus === 'SUBMITTED') kb.text('⚠️ Reject', `o:${id}:ask_reject`);
     } else {
       kb.text('✅ Confirm order', `o:${id}:CONFIRMED`);
     }
@@ -93,8 +99,8 @@ function adminKeyboard(o: FullOrder) {
     kb.text('📦 Packing', `o:${id}:PACKING`).row();
   } else if (o.status === 'PACKING') {
     if (pickup) kb.text('🏁 Picked up', `o:${id}:PICKED_UP`).row();
-    else if (activeOffer?.status === 'accepted') kb.text(`📦 Handed to ${activeOffer.driver.name.split(' ')[0]}`, `o:${id}:handover`).row();
-    else if (activeOffer) kb.text('↩️ Cancel driver', `o:${id}:undispatch`).row();
+    else if (activeOffer?.status === 'accepted') kb.text(`📦 Handed to ${activeOffer.driver.name.split(' ')[0]}`, `o:${id}:ask_handover`).row();
+    else if (activeOffer) kb.text('↩️ Cancel driver', `o:${id}:ask_undispatch`).row();
     else kb.text('🛵 Choose a driver', `o:${id}:pick`).row();
   }
   // Out for delivery: no button — Delivered needs the customer's code (driver) or the admin's confirmation
@@ -233,7 +239,7 @@ async function sendCustomerMessage(o: FullOrder, kind: OrderEventKind) {
   const am = o.user?.languageCode === 'am';
   const kb = new InlineKeyboard();
   // Backup confirmation: the customer can confirm receipt themselves
-  if (kind === 'status' && o.status === 'OUT_FOR_DELIVERY' && o.deliveryCode) kb.text(am ? '✅ ተቀብያለሁ' : '✅ I received it', `rc:${o.id}`).row();
+  if (kind === 'status' && o.status === 'OUT_FOR_DELIVERY' && o.deliveryCode) kb.text(am ? '✅ ተቀብያለሁ' : '✅ I received it', `rc:${o.id}:ask`).row();
   kb.webApp(am ? 'ትዕዛዙን ይመልከቱ' : 'View order', shopUrl(`/orders/${o.orderNumber}`));
   await bot.api.sendMessage(o.telegramChatId.toString(), text, { parse_mode: 'HTML', reply_markup: kb });
 }

@@ -32,6 +32,15 @@ async function describe(method: string, path: string, body: Record<string, unkno
   const p = path.replace(/\?.*$/, '').replace(/\/+$/, '');
   let m: RegExpMatchArray | null;
 
+  if ((m = p.match(/^\/orders\/([^/]+)\/cancel\/(undo|now)$/)))
+    return {
+      action: m[2] === 'undo' ? 'order.cancel_undone' : 'order.cancel_now',
+      summary: m[2] === 'undo' ? `Undid the cancel of ${await orderNo(m[1]!)}` : `Cancelled ${await orderNo(m[1]!)} right away`,
+      entity: 'order',
+      entityId: m[1],
+    };
+  if ((m = p.match(/^\/orders\/([^/]+)\/status$/)) && body.status === 'CANCELLED')
+    return { action: 'order.cancel_requested', summary: `Asked to cancel ${await orderNo(m[1]!)} (undo possible for a few minutes)`, entity: 'order', entityId: m[1] };
   if ((m = p.match(/^\/orders\/([^/]+)\/status$/))) {
     const how =
       body.status === 'DELIVERED'

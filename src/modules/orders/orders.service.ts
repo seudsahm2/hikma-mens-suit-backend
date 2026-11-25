@@ -5,7 +5,8 @@ import { badRequest, conflict, notFound } from '../../lib/http';
 import { imageUrls } from '../../lib/storage';
 import { getSettings } from '../settings/settings.service';
 import { canAutoVerify, verifyTransaction } from '../payments/shegerpay';
-import { notifyOrderEvent } from '../telegram/notify';
+import { notifyOrderEvent, refreshAdminCards } from '../telegram/notify';
+import { logger } from '../../lib/logger';
 import { onStockRestored } from '../alerts/backInStock';
 import { canMoveTo, fitsDeliveryType, isFinalStatus, STATUS_LABEL } from './rules';
 import { mergeSizeProfile } from '../../lib/sizeProfile';
@@ -22,6 +23,8 @@ export function serializeOrder(o: OrderWithRelations, opts: { staff?: boolean } 
     id: o.id,
     orderNumber: o.orderNumber,
     status: o.status,
+    // staff only: a cancel counting down (undo window)
+    ...(opts.staff ? { cancelAt: o.cancelAt } : {}),
     paymentStatus: o.paymentStatus,
     source: o.source,
     customerName: o.customerName,
@@ -425,6 +428,9 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true } });
   if (!order) throw notFound('Order not found');
   if (order.status === status) throw conflict(`This order is already ${STATUS_LABEL[status]}`, 'STALE');
+  // A cancel is waiting to take effect: undo it first (or cancel now) — nothing else moves meanwhile
+  // (Exception: the customer's code / confirmation — the goods are with them, so delivery wins.)
+  if (order.cancelAt && status !== 'CANCELLED' && !(proof.trusted && (status === 'DELIVERED' || status === 'PICKED_UP'))) throw conflict('This order is about to be cancelled — tap “Undo cancel” first', 'CANCEL_PENDING');
   // A written "delivered without the code" override may close an order that never went out
   // (e.g. the customer came and took it); everything else follows the step-by-step flow.
   const overrideJump = status === 'DELIVERED' && proof.overrideReason !== undefined && ['CONFIRMED', 'PACKING'].includes(order.status);
@@ -483,6 +489,7 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
       // Balance is collected on delivery / at pickup
       data: {
         status,
+        ...(status === 'CANCELLED' || delivered ? { cancelAt: null } : {}),
         ...(delivered ? { amountPaid: order.total, paymentStatus: 'PAID' } : {}),
         // Delivered by a driver with money still due → the driver holds that cash until the shop marks it received
         ...(status === 'DELIVERED' && order.driverId && order.total > order.amountPaid
@@ -522,11 +529,53 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
     );
   }
   if (status === 'CANCELLED') {
+    // A driver who accepted / was offered the job hears it right away (no wasted trip)
+    safely(() => import('../delivery/dispatch').then((d) => d.cancelDispatch(orderId)), 'driver told about cancel');
     onStockRestored(order.items.map((i) => i.variantId));
     safely(() => onOrderCancelled(orderId), 'credit refund');
   }
   if (delivered) safely(() => onOrderReceived(orderId), 'rewards');
   return updated;
+}
+
+// ─── Cancel with an undo window ─────────────────────────────────────────────
+// Staff cancels don't happen instantly: for CANCEL_UNDO_MINUTES the order only shows "cancelling…"
+// with Undo / Cancel now. Nobody is told and no stock moves until it really happens, so a wrong tap
+// costs nothing. Same rules for the website and the Telegram cards (both call these).
+
+export const CANCEL_UNDO_MINUTES = 3;
+
+export async function requestCancel(orderId: string, actorId: string | null, note?: string) {
+  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  if (!order) throw notFound('Order not found');
+  if (isFinalStatus(order.status)) throw conflict(`This order is already ${STATUS_LABEL[order.status]} — it can’t be cancelled`, 'STALE');
+  if (order.cancelAt) return order; // already counting down
+  const cancelAt = new Date(Date.now() + CANCEL_UNDO_MINUTES * 60_000);
+  const res = await prisma.order.updateMany({ where: { id: orderId, status: order.status, cancelAt: null }, data: { cancelAt, cancelById: actorId, cancelNote: note ?? null } });
+  if (!res.count) throw conflict('This order was just updated by someone else', 'STALE');
+  await prisma.orderEvent.create({ data: { orderId, type: 'internal_cancel_requested', message: `Cancel requested — takes effect in ${CANCEL_UNDO_MINUTES} min unless undone`, actorId } });
+  void refreshAdminCards(orderId).catch(() => undefined); // staff cards only — the customer hears nothing until it really happens
+  return prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+}
+
+export async function undoCancel(orderId: string, actorId: string | null) {
+  const res = await prisma.order.updateMany({ where: { id: orderId, cancelAt: { not: null }, status: { notIn: ['CANCELLED'] } }, data: { cancelAt: null, cancelById: null, cancelNote: null } });
+  if (!res.count) throw conflict('Too late — this order is already cancelled (or the cancel was undone)', 'STALE');
+  await prisma.orderEvent.create({ data: { orderId, type: 'internal_cancel_undone', message: 'Cancel undone — order continues', actorId } });
+  void refreshAdminCards(orderId).catch(() => undefined); // staff cards only — the customer hears nothing until it really happens
+}
+
+/** "Cancel now" (second deliberate tap) or the timer running out. */
+export async function commitCancel(orderId: string, actorId?: string | null) {
+  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  if (!order?.cancelAt) throw conflict('This cancel was undone', 'STALE');
+  return changeStatus(orderId, 'CANCELLED', actorId ?? order.cancelById, order.cancelNote ?? undefined);
+}
+
+export async function commitDueCancels() {
+  const due = await prisma.order.findMany({ where: { cancelAt: { lte: new Date() }, status: { notIn: ['CANCELLED', 'DELIVERED', 'PICKED_UP'] } }, select: { id: true }, take: 20 });
+  for (const o of due) await commitCancel(o.id).catch((err) => logger.warn({ err, orderId: o.id }, 'pending cancel failed'));
+  return due.length;
 }
 
 /** Releases stock held by unpaid orders older than `hours`. */

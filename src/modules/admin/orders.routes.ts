@@ -5,7 +5,7 @@ import { prisma } from '../../lib/prisma';
 import { ah, badRequest, notFound } from '../../lib/http';
 import { normalizeEthiopianPhone } from '../../lib/phone';
 import { validate } from '../../middleware/validate';
-import { changeStatus, createOrder, orderInclude, reviewPayment, serializeOrder } from '../orders/orders.service';
+import { CANCEL_UNDO_MINUTES, changeStatus, commitCancel, createOrder, orderInclude, requestCancel, reviewPayment, serializeOrder, undoCancel } from '../orders/orders.service';
 
 export const adminOrdersRouter = Router();
 
@@ -87,7 +87,22 @@ adminOrdersRouter.patch(
   ),
   ah(async (req, res) => {
     const { code, overrideReason, overrideConfirm } = req.body as { code?: string; overrideReason?: string; overrideConfirm?: string };
-    const order = await changeStatus(req.params.id!, req.body.status, req.user!.id, req.body.note, { code, overrideReason, overrideConfirm });
+    // Cancel starts an undo window (see requestCancel); everything else happens right away
+    if (req.body.status === 'CANCELLED') await requestCancel(req.params.id!, req.user!.id, req.body.note);
+    else await changeStatus(req.params.id!, req.body.status, req.user!.id, req.body.note, { code, overrideReason, overrideConfirm });
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: req.params.id }, include: orderInclude });
+    res.json({ order: serializeOrder(order, { staff: true }), undoMinutes: CANCEL_UNDO_MINUTES });
+  }),
+);
+
+/** Undo a cancel that hasn't happened yet, or make it happen now (second deliberate tap). */
+adminOrdersRouter.post(
+  '/:id/cancel/:what',
+  ah(async (req, res) => {
+    if (req.params.what === 'undo') await undoCancel(req.params.id!, req.user!.id);
+    else if (req.params.what === 'now') await commitCancel(req.params.id!, req.user!.id);
+    else throw notFound('Unknown action');
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: req.params.id }, include: orderInclude });
     res.json({ order: serializeOrder(order, { staff: true }) });
   }),
 );

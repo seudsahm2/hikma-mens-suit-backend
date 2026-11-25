@@ -243,6 +243,18 @@ if (bot) {
     // Imported lazily to avoid a circular import (orders.service → notify → bot)
     const { changeStatus, reviewPayment } = await import('../orders/orders.service');
     const { refreshAdminCards } = await import('./notify');
+    // Risky taps ask once more (a wrong tap here messages the customer or a driver)
+    const ASK: Record<string, [string, string]> = {
+      ask_reject: ['⚠️ Yes, reject the payment', 'reject'],
+      ask_handover: ['📦 Yes, the driver has the items', 'handover'],
+      ask_undispatch: ['↩️ Yes, cancel the driver', 'undispatch'],
+    };
+    if (ASK[action!]) {
+      const [label, real] = ASK[action!]!;
+      await ctx.answerCallbackQuery({ text: 'Sure? Tap again to confirm' });
+      await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard().text(label, `o:${orderId}:${real}`).row().text('↩️ No, go back', `od:${orderId}:back`) }).catch(() => undefined);
+      return;
+    }
     if (action === 'pick') {
       // Driver list, nearest first (free + online on top) — the staff member picks, or lets the bot choose
       const { rankedDrivers } = await import('../delivery/dispatch');
@@ -258,9 +270,18 @@ if (bot) {
       await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => undefined);
       return;
     }
+    let doneText = '✅ Done';
     try {
       const actorId = actor && actor.role !== 'CUSTOMER' ? actor.id : null;
-      if (action === 'verify') await reviewPayment(orderId!, actorId, { approve: true });
+      if (action === 'CANCELLED' || action === 'undocancel' || action === 'cancelnow') {
+        // Cancel = undo window (same as the website); nobody is told until it really happens
+        const svc = await import('../orders/orders.service');
+        if (action === 'CANCELLED') await svc.requestCancel(orderId!, actorId);
+        else if (action === 'undocancel') await svc.undoCancel(orderId!, actorId);
+        else await svc.commitCancel(orderId!, actorId);
+        doneText =
+          action === 'CANCELLED' ? `⏳ Cancelling in ${svc.CANCEL_UNDO_MINUTES} min — tap Undo if it was a mistake` : action === 'undocancel' ? '↩️ Cancel undone — the order continues' : '✖️ Cancelled';
+      } else if (action === 'verify') await reviewPayment(orderId!, actorId, { approve: true });
       else if (action === 'reject') await reviewPayment(orderId!, actorId, { approve: false });
       else if (action === 'dispatch' || action === 'handover' || action === 'undispatch') {
         // Same delivery flow as the admin: find the nearest driver → driver accepts → shop hands over
@@ -272,7 +293,7 @@ if (bot) {
       } else if (action === 'DELIVERED' || action === 'OUT_FOR_DELIVERY') {
         throw Object.assign(new Error(action === 'DELIVERED' ? 'Delivered = the driver types the customer’s code (or confirm it in the admin)' : 'Use “Find nearest driver”, then “Handed over”'), { code: 'USE_FLOW' });
       } else await changeStatus(orderId!, action as OrderStatus, actorId, undefined);
-      await ctx.answerCallbackQuery({ text: '✅ Done' });
+      await ctx.answerCallbackQuery({ text: doneText });
       await refreshAdminCards(orderId!, `Last action by ${who}`);
       const { logActivity } = await import('../admin/activity');
       const o = await prisma.order.findUnique({ where: { id: orderId }, select: { orderNumber: true } });
@@ -280,7 +301,7 @@ if (bot) {
         actorId,
         actorName: actor?.fullName ?? who,
         action: action === 'verify' || action === 'reject' ? 'order.payment' : 'order.status',
-        summary: `${o?.orderNumber ?? 'Order'} → ${action === 'verify' ? 'payment confirmed' : action === 'reject' ? 'payment rejected' : String(action).toLowerCase().replace(/_/g, ' ')} (Telegram)`,
+        summary: `${o?.orderNumber ?? 'Order'} → ${({ verify: 'payment confirmed', reject: 'payment rejected', CANCELLED: 'cancel requested (undo possible)', undocancel: 'cancel undone', cancelnow: 'cancelled right away' } as Record<string, string>)[action!] ?? String(action).toLowerCase().replace(/_/g, ' ')} (Telegram)`,
         entity: 'order',
         entityId: orderId,
       });
