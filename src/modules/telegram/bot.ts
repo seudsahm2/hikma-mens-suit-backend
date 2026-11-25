@@ -248,6 +248,7 @@ if (bot) {
       ask_reject: ['⚠️ Yes, reject the payment', 'reject'],
       ask_handover: ['📦 Yes, the driver has the items', 'handover'],
       ask_undispatch: ['↩️ Yes, cancel the driver', 'undispatch'],
+      ask_PICKED_UP: ['🏁 Yes, the customer has it', 'PICKED_UP'],
     };
     if (ASK[action!]) {
       const [label, real] = ASK[action!]!;

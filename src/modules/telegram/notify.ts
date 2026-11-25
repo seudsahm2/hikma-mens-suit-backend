@@ -98,7 +98,7 @@ function adminKeyboard(o: FullOrder) {
   } else if (o.status === 'CONFIRMED') {
     kb.text('📦 Packing', `o:${id}:PACKING`).row();
   } else if (o.status === 'PACKING') {
-    if (pickup) kb.text('🏁 Picked up', `o:${id}:PICKED_UP`).row();
+    if (pickup) kb.text('🏁 Picked up', `o:${id}:ask_PICKED_UP`).row();
     else if (activeOffer?.status === 'accepted') kb.text(`📦 Handed to ${activeOffer.driver.name.split(' ')[0]}`, `o:${id}:ask_handover`).row();
     else if (activeOffer) kb.text('↩️ Cancel driver', `o:${id}:ask_undispatch`).row();
     else kb.text('🛵 Choose a driver', `o:${id}:pick`).row();
