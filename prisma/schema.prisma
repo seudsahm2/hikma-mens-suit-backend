@@ -729,6 +729,8 @@ model Driver {
   awaitingOrderId String?
   /// Takes jobs only when online (/online, /offline in the bot)
   isOnline        Boolean   @default(false)
+  /// Private-chat topic "🛵 Deliveries" (Telegram threaded mode) — keeps driver messages apart from shopping messages
+  topicId         Int?
   /// Latest position from Telegram live location
   lat             Float?
   lng             Float?

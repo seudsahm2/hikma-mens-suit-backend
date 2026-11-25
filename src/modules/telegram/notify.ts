@@ -1,5 +1,5 @@
 import { InlineKeyboard } from 'grammy';
-import type { Order, OrderItem, OrderStatus, User } from '@prisma/client';
+import type { DeliveryOffer, Driver, Order, OrderItem, OrderStatus, User } from '@prisma/client';
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { bot, shopUrl } from './bot';
@@ -8,7 +8,12 @@ import { canReviewPayment, isFinalStatus, nextSteps } from '../orders/rules';
 
 export type OrderEventKind = 'placed' | 'payment_submitted' | 'payment_verified' | 'payment_rejected' | 'status';
 
-type FullOrder = Order & { items: OrderItem[]; user: User | null };
+type FullOrder = Order & {
+  items: OrderItem[];
+  user: User | null;
+  /** latest driver offer (delivery orders), for the card's driver line and buttons */
+  deliveryOffers?: (DeliveryOffer & { driver: Driver })[];
+};
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   PENDING: '🕓 Pending',
@@ -47,7 +52,7 @@ function adminCardText(o: FullOrder, footer?: string) {
     `<b>Due now:</b> ${birr(o.amountDue)}${o.isDeposit ? ' (deposit)' : ''}`,
     `<b>Payment:</b> ${escapeHtml(o.paymentLabel ?? '-')} — ${PAYMENT_LABEL[o.paymentStatus]}`,
     o.transactionRef ? `<b>Ref:</b> <code>${escapeHtml(o.transactionRef)}</code>` : '',
-    o.status === 'OUT_FOR_DELIVERY' && o.deliveryOptionId !== 'pickup' ? '🔐 Becomes delivered when the customer’s code is confirmed' : '',
+    driverLine(o),
     '',
     `👤 ${escapeHtml(o.customerName)} · <a href="tel:${o.customerPhone}">${o.customerPhone}</a>${
       o.user?.telegramUsername ? ` · @${escapeHtml(o.user.telegramUsername)}` : ''
@@ -62,29 +67,58 @@ function adminCardText(o: FullOrder, footer?: string) {
 }
 
 /** Buttons offered on a card — computed from the same rules the server enforces. */
+/**
+ * Exactly ONE next step — the same flow as the website and the Mini App:
+ *   Pending: confirm the payment (or "Confirm" for cash) → Confirmed: Packing →
+ *   Packing: delivery → Find nearest driver / (driver accepted) Handed over; pickup → Picked up →
+ *   On the way: nothing to tap — it becomes Delivered when the driver types the customer's code.
+ */
 function adminKeyboard(o: FullOrder) {
   const kb = new InlineKeyboard();
   if (isFinalStatus(o.status)) return kb;
   const id = o.id;
-  if (canReviewPayment(o.status, o.paymentStatus)) {
-    kb.text('✅ Payment OK', `o:${id}:verify`);
-    if (o.paymentStatus === 'SUBMITTED') kb.text('⚠️ Reject', `o:${id}:reject`);
+  const pickup = o.deliveryOptionId === 'pickup';
+  const offer = o.deliveryOffers?.[0];
+  const activeOffer = offer && (offer.status === 'offered' || offer.status === 'accepted') ? offer : null;
+
+  if (o.status === 'PENDING') {
+    if (canReviewPayment(o.status, o.paymentStatus) && o.paymentMethodId !== 'cash') {
+      kb.text('✅ Payment OK', `o:${id}:verify`);
+      if (o.paymentStatus === 'SUBMITTED') kb.text('⚠️ Reject', `o:${id}:reject`);
+    } else {
+      kb.text('✅ Confirm order', `o:${id}:CONFIRMED`);
+    }
     kb.row();
+  } else if (o.status === 'CONFIRMED') {
+    kb.text('📦 Packing', `o:${id}:PACKING`).row();
+  } else if (o.status === 'PACKING') {
+    if (pickup) kb.text('🏁 Picked up', `o:${id}:PICKED_UP`).row();
+    else if (activeOffer?.status === 'accepted') kb.text(`📦 Handed to ${activeOffer.driver.name.split(' ')[0]}`, `o:${id}:handover`).row();
+    else if (activeOffer) kb.text('↩️ Cancel driver', `o:${id}:undispatch`).row();
+    else kb.text('🛵 Find nearest driver', `o:${id}:dispatch`).row();
   }
-  const labels: Partial<Record<OrderStatus, string>> = {
-    PACKING: '📦 Packing',
-    OUT_FOR_DELIVERY: '🚚 On the way',
-    DELIVERED: '🏁 Delivered',
-    PICKED_UP: '🏁 Picked up',
-  };
-  // "Delivered" is never a one-tap button: it needs the customer's code (driver) or the admin's confirmation
-  for (const step of nextSteps(o.status, o.deliveryOptionId === 'pickup').filter((s) => s !== 'DELIVERED')) kb.text(labels[step]!, `o:${id}:${step}`);
-  kb.row().text('✖️ Cancel', `o:${id}:CANCELLED`);
+  // Out for delivery: no button — Delivered needs the customer's code (driver) or the admin's confirmation
+  kb.text('✖️ Cancel', `o:${id}:CANCELLED`);
   return kb;
 }
 
+/** "🛵 Waiting for Nati…" / "🛵 Nati accepted — ~15 min" / "🛵 With Nati" */
+function driverLine(o: FullOrder) {
+  if (o.deliveryOptionId === 'pickup' || isFinalStatus(o.status)) return '';
+  const offer = o.deliveryOffers?.[0];
+  if (o.status === 'OUT_FOR_DELIVERY' && offer) return `🛵 With <b>${escapeHtml(offer.driver.name)}</b> · 🔐 delivered when the customer’s code is confirmed`;
+  if (!offer) return '';
+  if (offer.status === 'offered') return `🛵 Waiting for <b>${escapeHtml(offer.driver.name)}</b> to accept…`;
+  if (offer.status === 'accepted') return `🛵 <b>${escapeHtml(offer.driver.name)}</b> accepted — at the shop in ~${offer.etaMinutes ?? '?'} min`;
+  if (offer.status === 'declined' || offer.status === 'expired') return `🛵 ${escapeHtml(offer.driver.name)} ${offer.status === 'declined' ? 'can’t take it' : 'didn’t answer'} — find another driver`;
+  return '';
+}
+
 async function loadOrder(orderId: string) {
-  return prisma.order.findUnique({ where: { id: orderId }, include: { items: true, user: true } });
+  return prisma.order.findUnique({
+    where: { id: orderId },
+    include: { items: true, user: true, deliveryOffers: { orderBy: { offeredAt: 'desc' }, take: 1, include: { driver: true } } },
+  });
 }
 
 /** Sends a new card to the order-alerts chat and remembers it, so later changes can update it. */

@@ -206,8 +206,16 @@ if (bot) {
       const actorId = actor && actor.role !== 'CUSTOMER' ? actor.id : null;
       if (action === 'verify') await reviewPayment(orderId!, actorId, { approve: true });
       else if (action === 'reject') await reviewPayment(orderId!, actorId, { approve: false });
-      else if (action === 'DELIVERED') throw Object.assign(new Error('Delivery is confirmed with the customer’s code (driver) — or in the admin'), { code: 'NEEDS_CODE' });
-      else await changeStatus(orderId!, action as OrderStatus, actorId, undefined);
+      else if (action === 'dispatch' || action === 'handover' || action === 'undispatch') {
+        // Same delivery flow as the admin: find the nearest driver → driver accepts → shop hands over
+        const d = await import('../delivery/dispatch');
+        const staff = actor && actor.role !== 'CUSTOMER' ? actor : null;
+        if (action === 'dispatch') await d.dispatch(orderId!, null, { id: staff?.id ?? '', fullName: staff?.fullName ?? who });
+        else if (action === 'handover') await d.handover(orderId!, actorId ?? '');
+        else await d.cancelDispatch(orderId!);
+      } else if (action === 'DELIVERED' || action === 'OUT_FOR_DELIVERY') {
+        throw Object.assign(new Error(action === 'DELIVERED' ? 'Delivered = the driver types the customer’s code (or confirm it in the admin)' : 'Use “Find nearest driver”, then “Handed over”'), { code: 'USE_FLOW' });
+      } else await changeStatus(orderId!, action as OrderStatus, actorId, undefined);
       await ctx.answerCallbackQuery({ text: '✅ Done' });
       await refreshAdminCards(orderId!, `Last action by ${who}`);
       const { logActivity } = await import('../admin/activity');

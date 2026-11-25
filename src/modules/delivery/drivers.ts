@@ -21,6 +21,7 @@ import { bot } from '../telegram/bot';
 import { birr, escapeHtml } from '../telegram/media';
 import { logActivity } from '../admin/activity';
 import { cancelDispatch, dispatch, dispatchState, driverBoard, handover } from './dispatch';
+import { BTN_LOCATION, BTN_OFFLINE, BTN_ONLINE, DRIVER_BUTTONS, driverKeyboard, driverSend, ensureDriverTopic } from './driverChat';
 
 const MAX_TRIES = 5;
 const linkCode = () => Array.from({ length: 6 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[randomInt(32)]).join('');
@@ -59,7 +60,7 @@ export async function sendDriverCard(orderId: string) {
     .join('\n');
   const kb = new InlineKeyboard().text('✅  Delivered', `dv:${o.id}:done`).text('⚠️  Couldn’t deliver', `dv:${o.id}:fail`);
   if (map) kb.row().url('🗺  Open map', map);
-  await bot.api.sendMessage(Number(o.driver.telegramId), text, { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true } });
+  await driverSend(o.driver, text, { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true } });
 }
 
 async function markDelivered(orderId: string, note: string) {
@@ -198,8 +199,15 @@ if (bot) {
     const d = code ? await prisma.driver.findUnique({ where: { linkCode: code } }) : null;
     if (!d || !d.isActive) return void (await ctx.reply('This code isn’t valid. Ask the shop for a new one.'));
     await prisma.driver.updateMany({ where: { telegramId: BigInt(ctx.from.id), id: { not: d.id } }, data: { telegramId: null } });
-    await prisma.driver.update({ where: { id: d.id }, data: { telegramId: BigInt(ctx.from.id), linkCode: null } });
-    await ctx.reply(`✅ Hi ${d.name}! You’re connected as a Hikma delivery person. Orders you deliver will arrive here.`);
+    const linked = await prisma.driver.update({ where: { id: d.id }, data: { telegramId: BigInt(ctx.from.id), linkCode: null, topicId: null } });
+    // Own "🛵 Deliveries" topic (when available) + the three buttons — no commands to remember
+    const topicId = await ensureDriverTopic(linked);
+    if (topicId) await ctx.reply('✅ Connected! Your deliveries have their own topic: “🛵 Deliveries”.');
+    await driverSend(
+      { ...linked, topicId },
+      `✅ Hi ${d.name}! You’re a Hikma delivery person.\n\nWhen you’re ready for jobs tap “${BTN_ONLINE}”, then “${BTN_LOCATION}”. Tap “${BTN_OFFLINE}” when you stop.`,
+      { reply_markup: driverKeyboard() },
+    );
     void logActivity({ actorName: d.name, action: 'driver.link', summary: `${d.name} connected Telegram`, entity: 'driver', entityId: d.id });
   });
 
@@ -213,19 +221,20 @@ if (bot) {
     if (action === 'fail') {
       await prisma.orderEvent.create({ data: { orderId: order.id, type: 'internal_delivery_failed', message: `${driver.name} couldn’t deliver` } });
       await alertStaff(`⚠️ <b>${escapeHtml(driver.name)}</b> couldn’t deliver <b>${escapeHtml(order.orderNumber)}</b>. Call the customer: <a href="tel:${order.customerPhone}">${order.customerPhone}</a>`);
-      await ctx.reply(`OK — the shop has been told about ${order.orderNumber}.`);
+      await driverSend(driver, `OK — the shop has been told about ${order.orderNumber}.`);
       return;
     }
     await prisma.driver.update({ where: { id: driver.id }, data: { awaitingOrderId: order.id } });
-    await ctx.reply(`🔐 Type the 4-digit code the customer gives you for ${order.orderNumber}:`, { reply_markup: { force_reply: true, input_field_placeholder: '4-digit code' } });
+    await driverSend(driver, `🔐 Type the 4-digit code the customer gives you for ${order.orderNumber}:`, { reply_markup: { force_reply: true, input_field_placeholder: '4-digit code' } });
   });
 
   // The driver types the code (plain message in the bot chat)
   bot.on('message:text', async (ctx, next) => {
-    if (ctx.chat.type !== 'private' || !ctx.from || ctx.message.text.startsWith('/')) return next();
+    if (ctx.chat.type !== 'private' || !ctx.from || ctx.message.text.startsWith('/') || DRIVER_BUTTONS.includes(ctx.message.text)) return next();
     const reply = await checkDeliveryCode(ctx.from.id, ctx.message.text);
     if (!reply) return next();
-    await ctx.reply(reply.text, reply.again ? { reply_markup: { force_reply: true, input_field_placeholder: '4-digit code' } } : {});
+    const me = await prisma.driver.findUnique({ where: { telegramId: BigInt(ctx.from.id) } });
+    if (me) await driverSend(me, reply.text, reply.again ? { reply_markup: { force_reply: true, input_field_placeholder: '4-digit code' } } : { reply_markup: driverKeyboard() });
   });
 
   // Backup: the customer confirms receipt themselves

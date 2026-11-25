@@ -425,16 +425,24 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true } });
   if (!order) throw notFound('Order not found');
   if (order.status === status) throw conflict(`This order is already ${STATUS_LABEL[status]}`, 'STALE');
-  if (!canMoveTo(order.status, status)) {
+  // A written "delivered without the code" override may close an order that never went out
+  // (e.g. the customer came and took it); everything else follows the step-by-step flow.
+  const overrideJump = status === 'DELIVERED' && proof.overrideReason !== undefined && ['CONFIRMED', 'PACKING'].includes(order.status);
+  if (!canMoveTo(order.status, status) && !overrideJump) {
+    const next = { PENDING: 'Confirmed', CONFIRMED: 'Packing', PACKING: order.deliveryOptionId === 'pickup' ? 'Picked up' : 'the driver handover', OUT_FOR_DELIVERY: 'Delivered' } as Record<string, string>;
     throw conflict(
       isFinalStatus(order.status)
         ? `This order is already ${STATUS_LABEL[order.status]} — it can’t be changed`
-        : `This order is already ${STATUS_LABEL[order.status]} — it can’t go back to ${STATUS_LABEL[status]}`,
+        : `This order is ${STATUS_LABEL[order.status]} — the next step is ${next[order.status] ?? 'different'}`,
       'STALE',
     );
   }
 
   const pickup = order.deliveryOptionId === 'pickup';
+  // "On the way" happens only when the shop hands the items to a driver who accepted the job
+  if (status === 'OUT_FOR_DELIVERY' && !pickup && !proof.trusted) {
+    throw conflict('Send it with a driver: “Find nearest driver”, then “Handed over” when they take it', 'USE_DRIVER');
+  }
   if (!fitsDeliveryType(status, pickup)) {
     throw conflict(
       pickup ? 'This order is picked up at the shop — use “Picked up”' : 'This is a delivery order — it’s finished with the customer’s delivery code, not “Picked up”',

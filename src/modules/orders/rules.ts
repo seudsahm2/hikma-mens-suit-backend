@@ -8,24 +8,30 @@ import type { OrderStatus, PaymentStatus } from '@prisma/client';
  *   any unfinished state → CANCELLED
  *   DELIVERED / PICKED_UP / CANCELLED are final.
  */
-const STEP: Record<OrderStatus, number> = {
-  PENDING: 0,
-  CONFIRMED: 1,
-  PACKING: 2,
-  OUT_FOR_DELIVERY: 3,
-  DELIVERED: 4,
-  PICKED_UP: 4,
-  CANCELLED: 9,
+/**
+ * One step at a time — the same flow on the website, the Mini App and the Telegram cards:
+ *   delivery: PENDING → CONFIRMED → PACKING → OUT_FOR_DELIVERY (driver handover) → DELIVERED (customer's code)
+ *   pickup:   PENDING → CONFIRMED → PACKING → PICKED_UP
+ * (Confirming the payment moves PENDING → CONFIRMED by itself.)
+ */
+const NEXT: Record<OrderStatus, OrderStatus[]> = {
+  PENDING: ['CONFIRMED'],
+  CONFIRMED: ['PACKING'],
+  PACKING: ['OUT_FOR_DELIVERY', 'PICKED_UP'],
+  OUT_FOR_DELIVERY: ['DELIVERED'],
+  DELIVERED: [],
+  PICKED_UP: [],
+  CANCELLED: [],
 };
 const FINAL: OrderStatus[] = ['DELIVERED', 'PICKED_UP', 'CANCELLED'];
 
 export const isFinalStatus = (s: OrderStatus) => FINAL.includes(s);
 
-/** Forward steps only, or cancel while not finished. */
+/** The next step only (no skipping), or cancel while not finished. */
 export function canMoveTo(from: OrderStatus, to: OrderStatus): boolean {
   if (from === to || isFinalStatus(from)) return false;
   if (to === 'CANCELLED') return true;
-  return STEP[to] > STEP[from];
+  return NEXT[from].includes(to);
 }
 
 /**
@@ -46,8 +52,7 @@ export function canReviewPayment(status: OrderStatus, payment: PaymentStatus) {
 
 /** The next delivery steps worth offering as buttons, in order. */
 export function nextSteps(status: OrderStatus, pickup: boolean): OrderStatus[] {
-  const candidates: OrderStatus[] = pickup ? ['PACKING', 'PICKED_UP'] : ['PACKING', 'OUT_FOR_DELIVERY', 'DELIVERED'];
-  return candidates.filter((s) => canMoveTo(status, s));
+  return NEXT[status].filter((s) => fitsDeliveryType(s, pickup));
 }
 
 export const STATUS_LABEL: Record<OrderStatus, string> = {

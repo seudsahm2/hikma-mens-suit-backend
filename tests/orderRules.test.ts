@@ -2,9 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { canMoveTo, canReviewPayment, isFinalStatus, nextSteps } from '../src/modules/orders/rules';
 
 describe('order lifecycle rules', () => {
-  it('only moves forward', () => {
+  it('moves one step at a time — no skipping', () => {
     expect(canMoveTo('PENDING', 'CONFIRMED')).toBe(true);
-    expect(canMoveTo('CONFIRMED', 'OUT_FOR_DELIVERY')).toBe(true); // skipping a step is fine
+    expect(canMoveTo('CONFIRMED', 'PACKING')).toBe(true);
+    expect(canMoveTo('PACKING', 'OUT_FOR_DELIVERY')).toBe(true);
+    expect(canMoveTo('OUT_FOR_DELIVERY', 'DELIVERED')).toBe(true);
+    expect(canMoveTo('PENDING', 'PACKING')).toBe(false); // the skip the Telegram card used to offer
+    expect(canMoveTo('CONFIRMED', 'OUT_FOR_DELIVERY')).toBe(false);
+    expect(canMoveTo('PACKING', 'DELIVERED')).toBe(false);
     expect(canMoveTo('OUT_FOR_DELIVERY', 'PACKING')).toBe(false); // never backwards
     expect(canMoveTo('PACKING', 'PACKING')).toBe(false);
   });
@@ -29,7 +34,9 @@ describe('order lifecycle rules', () => {
   });
 
   it('suggests the right next buttons', () => {
-    expect(nextSteps('PENDING', false)).toEqual(['PACKING', 'OUT_FOR_DELIVERY', 'DELIVERED']);
+    expect(nextSteps('PENDING', false)).toEqual(['CONFIRMED']);
+    expect(nextSteps('CONFIRMED', true)).toEqual(['PACKING']);
+    expect(nextSteps('PACKING', false)).toEqual(['OUT_FOR_DELIVERY']);
     expect(nextSteps('OUT_FOR_DELIVERY', false)).toEqual(['DELIVERED']);
     expect(nextSteps('PACKING', true)).toEqual(['PICKED_UP']);
     expect(nextSteps('DELIVERED', false)).toEqual([]);

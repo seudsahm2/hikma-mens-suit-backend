@@ -17,6 +17,7 @@ import { conflict, notFound } from '../../lib/http';
 import { bot } from '../telegram/bot';
 import { birr, escapeHtml } from '../telegram/media';
 import { logActivity } from '../admin/activity';
+import { BTN_LOCATION, BTN_OFFLINE, BTN_ONLINE, driverKeyboard, driverSend, driverSendLocation } from './driverChat';
 
 export const OFFER_MINUTES = 5;
 const MAX_AUTO_TRIES = 3;
@@ -88,6 +89,11 @@ function assertDispatchable(o: { status: string; deliveryOptionId: string }) {
   if (['OUT_FOR_DELIVERY', 'DELIVERED', 'PICKED_UP', 'CANCELLED'].includes(o.status)) throw conflict('This order is already on the way or finished', 'FINISHED');
 }
 
+/** Keeps the order's Telegram cards in step with the driver state (buttons + driver line). */
+function refreshCards(orderId: string) {
+  void import('../telegram/notify').then(({ refreshAdminCards }) => refreshAdminCards(orderId)).catch(() => undefined);
+}
+
 /** Sends a job offer to one driver. */
 async function offerTo(orderId: string, driverId: string, auto: boolean) {
   const [order, driver, shop, settings] = await Promise.all([
@@ -116,12 +122,13 @@ async function offerTo(orderId: string, driverId: string, auto: boolean) {
       .row()
       .text('❌ Can’t now', `jo:${offer.id}:no`);
     try {
-      const msg = await bot.api.sendMessage(Number(driver.telegramId), text, { parse_mode: 'HTML', reply_markup: kb });
-      await prisma.deliveryOffer.update({ where: { id: offer.id }, data: { messageId: msg.message_id } });
+      const msg = await driverSend(driver, text, { parse_mode: 'HTML', reply_markup: kb });
+      if (msg) await prisma.deliveryOffer.update({ where: { id: offer.id }, data: { messageId: msg.message_id } });
     } catch (err) {
       logger.warn({ err: (err as Error).message, driverId }, 'job offer not delivered');
     }
   }
+  refreshCards(orderId);
   return offer;
 }
 
@@ -141,7 +148,7 @@ export async function dispatch(orderId: string, driverId: string | null, actor: 
   } else {
     const tried = await prisma.deliveryOffer.findMany({ where: { orderId, status: { in: ['declined', 'expired'] } }, select: { driverId: true } });
     const best = await pickDriver(new Set(tried.map((t) => t.driverId)));
-    if (!best) throw conflict('No driver is free right now — ask a driver to send /online, or pick one', 'NO_DRIVER');
+    if (!best) throw conflict('No driver is free right now — ask a driver to tap 🟢 Online in the bot, or pick one', 'NO_DRIVER');
     target = best.driver.id;
   }
   const offer = await offerTo(orderId, target, !driverId);
@@ -153,9 +160,10 @@ export async function cancelDispatch(orderId: string) {
   const active = await prisma.deliveryOffer.findMany({ where: { orderId, status: { in: ['offered', 'accepted'] } }, include: { driver: true, order: true } });
   for (const o of active) {
     await prisma.deliveryOffer.update({ where: { id: o.id }, data: { status: 'cancelled', respondedAt: new Date() } });
-    if (bot && o.driver.telegramId) await bot.api.sendMessage(Number(o.driver.telegramId), `↩️ ${o.order.orderNumber} was cancelled by the shop — no need to come.`).catch(() => undefined);
+    await driverSend(o.driver, `↩️ ${o.order.orderNumber} was cancelled by the shop — no need to come.`);
   }
   await prisma.order.update({ where: { id: orderId }, data: { driverId: null } });
+  refreshCards(orderId);
 }
 
 /** Staff: the driver took the items → order is on the way (customer gets the code, driver the delivery card). */
@@ -164,10 +172,12 @@ export async function handover(orderId: string, actorId: string) {
   if (!offer) throw conflict('No driver has accepted this order yet', 'NOT_ACCEPTED');
   const { changeStatus } = await import('../orders/orders.service');
   const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-  if (order.status !== 'OUT_FOR_DELIVERY') await changeStatus(orderId, 'OUT_FOR_DELIVERY', actorId, `Handed to ${offer.driver.name}`);
+  if (order.status === 'CONFIRMED') await changeStatus(orderId, 'PACKING', actorId); // one step at a time
+  if (order.status !== 'OUT_FOR_DELIVERY') await changeStatus(orderId, 'OUT_FOR_DELIVERY', actorId, `Handed to ${offer.driver.name}`, { trusted: true });
   await prisma.deliveryOffer.update({ where: { id: offer.id }, data: { status: 'completed' } });
   const { sendDriverCard } = await import('./drivers');
   await sendDriverCard(orderId).catch((err) => logger.warn({ err }, 'delivery card failed'));
+  refreshCards(orderId);
 }
 
 /** Current dispatch state of an order, for the admin order page. */
@@ -210,13 +220,15 @@ export async function respond(offerId: string, telegramId: number, answer: 'no' 
     await prisma.deliveryOffer.update({ where: { id: offer.id }, data: { status: 'declined', respondedAt: new Date() } });
     await tellStaff(`❌ <b>${escapeHtml(offer.driver.name)}</b> can’t take <b>${escapeHtml(offer.order.orderNumber)}</b>.${offer.auto ? ' Trying the next driver…' : ''}`);
     if (offer.auto) await next(offer.orderId);
+    refreshCards(offer.orderId);
     return { text: 'OK, thanks — we’ll ask someone else.', done: 'declined' as const };
   }
   const claimed = await prisma.deliveryOffer.updateMany({ where: { id: offer.id, status: 'offered' }, data: { status: 'accepted', etaMinutes: answer, respondedAt: new Date() } });
   if (!claimed.count) return { text: 'Already answered' };
   await prisma.order.update({ where: { id: offer.orderId }, data: { driverId: offer.driverId } });
   await prisma.orderEvent.create({ data: { orderId: offer.orderId, type: 'internal_driver_accepted', message: `${offer.driver.name} accepted — at the shop in ~${answer} min` } });
-  await tellStaff(`🛵 <b>${escapeHtml(offer.driver.name)}</b> accepted <b>${escapeHtml(offer.order.orderNumber)}</b> — at the shop in ~${answer} min. Tap “Handed over” in the admin when they take it.`);
+  await tellStaff(`🛵 <b>${escapeHtml(offer.driver.name)}</b> accepted <b>${escapeHtml(offer.order.orderNumber)}</b> — at the shop in ~${answer} min. Tap “Handed over” on the order card when they take it.`);
+  refreshCards(offer.orderId);
   void logActivity({ actorName: offer.driver.name, action: 'driver.accept', summary: `${offer.driver.name} accepted ${offer.order.orderNumber} (~${answer} min)`, entity: 'order', entityId: offer.orderId });
   return { text: `✅ Thanks! Come to the shop in ~${answer} min. The shop gives you the items and the delivery details.`, done: 'accepted' as const };
 }
@@ -246,6 +258,7 @@ async function expire(offerId: string) {
   }
   await tellStaff(`⌛ <b>${escapeHtml(o.driver.name)}</b> didn’t answer for <b>${escapeHtml(o.order.orderNumber)}</b>.${o.auto ? ' Trying the next driver…' : ' Pick another driver in the admin.'}`);
   if (o.auto) await next(o.orderId);
+  refreshCards(o.orderId);
 }
 
 /** Expires unanswered offers (and moves on). */
@@ -261,7 +274,15 @@ export function startDispatchWorker() {
   return () => clearInterval(timer);
 }
 
-// ─── Bot: offers, online/offline, live location ──────────
+// ─── Bot: offers, online/offline, location (driver buttons) ──
+
+/** 🟢 Online / ⚪ Offline — from the driver's buttons (or the old /online, /offline commands). */
+async function setOnline(telegramId: number, online: boolean) {
+  const d = await prisma.driver.findUnique({ where: { telegramId: BigInt(telegramId) } });
+  if (!d) return null;
+  await prisma.driver.update({ where: { id: d.id }, data: { isOnline: online } });
+  return d;
+}
 
 if (bot) {
   bot.callbackQuery(/^jo:([a-z0-9]+):(no|\d{1,3})$/, async (ctx) => {
@@ -270,35 +291,40 @@ if (bot) {
     await ctx.answerCallbackQuery({ text: r.text.slice(0, 190) });
     if (r.done) {
       await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
-      await ctx.reply(r.text);
-      if (r.done === 'accepted') {
-        const s = await shopPoint();
-        if (s) await ctx.replyWithLocation(s.lat, s.lng).catch(() => undefined);
+      const d = await prisma.driver.findUnique({ where: { telegramId: BigInt(ctx.from.id) } });
+      if (d) {
+        await driverSend(d, r.text);
+        if (r.done === 'accepted') {
+          const s = await shopPoint();
+          if (s) await driverSendLocation(d, s.lat, s.lng);
+        }
       }
     }
   });
 
-  const setOnline = async (telegramId: number, online: boolean) => {
-    const d = await prisma.driver.findUnique({ where: { telegramId: BigInt(telegramId) } });
-    if (!d) return null;
-    await prisma.driver.update({ where: { id: d.id }, data: { isOnline: online } });
-    return d;
-  };
-  bot.command('online', async (ctx) => {
-    if (ctx.chat.type !== 'private') return;
-    const d = await setOnline(ctx.from!.id, true);
-    if (!d) return void (await ctx.reply('Only connected delivery people can go online.'));
-    await ctx.reply(
-      `🟢 You’re online, ${d.name}. Jobs near you will arrive here.\n\n📍 Please share your LIVE location so the shop gives you the nearest jobs:\nAttach (📎) → Location → “Share My Live Location” (8 hours).\n\nSend /offline when you stop.`,
+  const goOnline = async (telegramId: number) => {
+    const d = await setOnline(telegramId, true);
+    if (!d) return;
+    const fresh = locationFresh(d);
+    await driverSend(
+      d,
+      fresh
+        ? `🟢 You’re online, ${d.name}. New jobs near you will arrive here.`
+        : `🟢 You’re online, ${d.name}.\n\n📍 Tap “${BTN_LOCATION}” below so the shop gives you the nearest jobs.\nEven better: 📎 → Location → “Share My Live Location” (it updates by itself for 8 hours).`,
+      { reply_markup: driverKeyboard() },
     );
-  });
-  bot.command('offline', async (ctx) => {
-    if (ctx.chat.type !== 'private') return;
-    const d = await setOnline(ctx.from!.id, false);
-    if (d) await ctx.reply('⚪ You’re offline — no new jobs until you send /online.');
-  });
+  };
+  const goOffline = async (telegramId: number) => {
+    const d = await setOnline(telegramId, false);
+    if (d) await driverSend(d, `⚪ You’re offline — no new jobs until you tap “${BTN_ONLINE}”.`, { reply_markup: driverKeyboard() });
+  };
 
-  // Location updates (a single location, or a live location — Telegram sends edits as it moves)
+  bot.hears(BTN_ONLINE, (ctx) => (ctx.chat.type === 'private' && ctx.from ? goOnline(ctx.from.id) : undefined));
+  bot.hears(BTN_OFFLINE, (ctx) => (ctx.chat.type === 'private' && ctx.from ? goOffline(ctx.from.id) : undefined));
+  bot.command('online', (ctx) => (ctx.chat.type === 'private' && ctx.from ? goOnline(ctx.from.id) : undefined));
+  bot.command('offline', (ctx) => (ctx.chat.type === 'private' && ctx.from ? goOffline(ctx.from.id) : undefined));
+
+  // Location: the 📍 button (one location) or a live location (Telegram sends edits as the driver moves)
   const saveLocation = async (telegramId: number, lat: number, lng: number) => {
     await prisma.driver.updateMany({ where: { telegramId: BigInt(telegramId) }, data: { lat, lng, locationAt: new Date() } });
   };
@@ -308,7 +334,13 @@ if (bot) {
     if (!d) return next();
     await saveLocation(ctx.from.id, ctx.message.location.latitude, ctx.message.location.longitude);
     if (!d.isOnline) await prisma.driver.update({ where: { id: d.id }, data: { isOnline: true } });
-    await ctx.reply(ctx.message.location.live_period ? '📍 Thanks — the shop can now see you’re nearby. You’re online.' : '📍 Got it. Tip: “Share My Live Location” keeps it updated automatically.');
+    await driverSend(
+      d,
+      ctx.message.location.live_period
+        ? '📍 Live location on — the shop sees you’re nearby. You’re online.'
+        : '📍 Got it — you’re online. Tip: 📎 → Location → “Share My Live Location” keeps it updated by itself.',
+      { reply_markup: driverKeyboard() },
+    );
   });
   bot.on('edited_message:location', async (ctx) => {
     if (ctx.chat.type !== 'private' || !ctx.from) return;
