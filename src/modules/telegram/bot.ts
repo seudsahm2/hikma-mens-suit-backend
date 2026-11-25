@@ -38,6 +38,11 @@ export function startParamToPath(param: string | undefined): string {
 
 export type AdminAction = 'verify' | 'reject' | OrderStatus;
 
+/** The staff account connected to this Telegram (if any), else the customer account. */
+async function staffOrUser(telegramId: number) {
+  return (await prisma.user.findFirst({ where: { staffTelegramId: BigInt(telegramId), isActive: true } })) ?? prisma.user.findUnique({ where: { telegramId: BigInt(telegramId) } });
+}
+
 if (bot) {
   bot.catch((err) => logger.error({ err: err.error }, 'telegram bot error'));
 
@@ -47,6 +52,14 @@ if (bot) {
 
     // Website sign-in: /start login_<token>. ctx.from is Telegram's own verified sender info.
     const payload = String(ctx.match ?? '');
+    // Staff connect link from the admin: t.me/<bot>?start=stf_CODE
+    if (payload.startsWith('stf_') && ctx.from) {
+      const u = await prisma.user.findUnique({ where: { staffLinkCode: payload.slice(4) } });
+      if (!u || u.role === 'CUSTOMER') return void (await ctx.reply('This link has expired. Open the admin and tap “Connect Telegram” again.'));
+      await prisma.user.updateMany({ where: { staffTelegramId: BigInt(ctx.from.id) }, data: { staffTelegramId: null } });
+      await prisma.user.update({ where: { id: u.id }, data: { staffTelegramId: BigInt(ctx.from.id), staffLinkCode: null } });
+      return void (await ctx.reply(`✅ Connected — order card actions from this Telegram are now recorded as ${u.fullName}.`));
+    }
     // Driver invite link from the admin: t.me/<bot>?start=drv_CODE
     if (payload.startsWith('drv_')) {
       const { linkDriver } = await import('../delivery/drivers');
@@ -204,7 +217,7 @@ if (bot) {
       await ctx.answerCallbackQuery();
       return refreshAdminCards(orderId!);
     }
-    const actor = ctx.from ? await prisma.user.findUnique({ where: { telegramId: BigInt(ctx.from.id) } }) : null;
+    const actor = ctx.from ? await staffOrUser(ctx.from.id) : null;
     const staff = actor && actor.role !== 'CUSTOMER' ? actor : null;
     try {
       const d = await import('../delivery/dispatch');
@@ -224,7 +237,7 @@ if (bot) {
       return;
     }
     const [, orderId, action] = ctx.match;
-    const actor = ctx.from ? await prisma.user.findUnique({ where: { telegramId: BigInt(ctx.from.id) } }) : null;
+    const actor = ctx.from ? await staffOrUser(ctx.from.id) : null;
     const who = ctx.from?.first_name ?? 'Admin';
     // Imported lazily to avoid a circular import (orders.service → notify → bot)
     const { changeStatus, reviewPayment } = await import('../orders/orders.service');

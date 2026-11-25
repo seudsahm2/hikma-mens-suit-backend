@@ -26,6 +26,8 @@ model User {
   phone            String?   @unique
   // Customers sign in with Telegram
   telegramId       BigInt?   @unique
+  staffTelegramId  BigInt?   @unique // owner/admin: their Telegram, for actions on the order cards
+  staffLinkCode    String?   @unique
   telegramUsername String?
   photoUrl         String?
   languageCode     String    @default("en")
