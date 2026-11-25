@@ -55,7 +55,8 @@ if (bot) {
     // Staff connect link from the admin: t.me/<bot>?start=stf_CODE
     if (payload.startsWith('stf_') && ctx.from) {
       const u = await prisma.user.findUnique({ where: { staffLinkCode: payload.slice(4) } });
-      if (!u || u.role === 'CUSTOMER') return void (await ctx.reply('This link has expired. Open the admin and tap “Connect Telegram” again.'));
+      const issued = parseInt(payload.slice(4).split('-')[0] ?? '', 36);
+      if (!u || u.role === 'CUSTOMER' || !(Date.now() - issued < 15 * 60_000)) return void (await ctx.reply('This link has expired. Open the admin and tap “Connect Telegram” again.'));
       await prisma.user.updateMany({ where: { staffTelegramId: BigInt(ctx.from.id) }, data: { staffTelegramId: null } });
       await prisma.user.update({ where: { id: u.id }, data: { staffTelegramId: BigInt(ctx.from.id), staffLinkCode: null } });
       return void (await ctx.reply(`✅ Connected — order card actions from this Telegram are now recorded as ${u.fullName}.`));

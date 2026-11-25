@@ -81,13 +81,11 @@ async function pickDriver(exclude: Set<string>) {
 
 type BoardRow = Awaited<ReturnType<typeof driverBoard>>[number];
 function rank(a: BoardRow, b: BoardRow) {
-  {
-    if (a.fresh !== b.fresh) return a.fresh ? -1 : 1;
-    if (a.distanceKm !== null && b.distanceKm !== null) return a.distanceKm - b.distanceKm;
-    if (a.distanceKm !== null) return -1;
-    if (b.distanceKm !== null) return 1;
-    return (b.driver.locationAt?.getTime() ?? 0) - (a.driver.locationAt?.getTime() ?? 0);
-  }
+  if (a.fresh !== b.fresh) return a.fresh ? -1 : 1;
+  if (a.distanceKm !== null && b.distanceKm !== null) return a.distanceKm - b.distanceKm;
+  if (a.distanceKm !== null) return -1;
+  if (b.distanceKm !== null) return 1;
+  return (b.driver.locationAt?.getTime() ?? 0) - (a.driver.locationAt?.getTime() ?? 0);
 }
 
 async function tellStaff(text: string) {

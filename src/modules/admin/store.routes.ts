@@ -238,7 +238,7 @@ adminStoreRouter.delete(
     const target = await prisma.user.findUnique({ where: { id: req.params.id } });
     if (!target || target.role !== 'ADMIN') throw notFound('Admin not found');
     // Keep history (order events reference the user): demote and lock instead of deleting.
-    await prisma.user.update({ where: { id: target.id }, data: { role: 'CUSTOMER', passwordHash: null, isActive: target.telegramId !== null } });
+    await prisma.user.update({ where: { id: target.id }, data: { role: 'CUSTOMER', passwordHash: null, staffTelegramId: null, staffLinkCode: null, isActive: target.telegramId !== null } });
     res.json({ ok: true });
   }),
 );

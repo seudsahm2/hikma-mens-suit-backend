@@ -259,7 +259,8 @@ authRouter.post(
   ah(async (req, res) => {
     const user = req.user!;
     if (user.role === 'CUSTOMER') throw unauthorized('Staff only');
-    const code = (await import('node:crypto')).randomBytes(9).toString('hex');
+    // <time>-<random>: the bot refuses links older than 15 minutes
+    const code = `${Date.now().toString(36)}-${(await import('node:crypto')).randomBytes(9).toString('hex')}`;
     await prisma.user.update({ where: { id: user.id }, data: { staffLinkCode: code } });
     res.json({ url: `https://t.me/${env.TELEGRAM_BOT_USERNAME}?start=stf_${code}`, connected: user.staffTelegramId !== null });
   }),
