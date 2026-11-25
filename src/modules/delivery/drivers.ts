@@ -21,7 +21,7 @@ import { bot } from '../telegram/bot';
 import { birr, escapeHtml } from '../telegram/media';
 import { logActivity } from '../admin/activity';
 import { cancelDispatch, dispatch, dispatchState, driverBoard, handover } from './dispatch';
-import { BTN_LOCATION, BTN_OFFLINE, BTN_ONLINE, DRIVER_BUTTONS, driverKeyboard, driverSend, ensureDriverTopic } from './driverChat';
+import { BTN_OFFLINE, LIVE_HOWTO, BTN_ONLINE, DRIVER_BUTTONS, driverKeyboard, driverSend, ensureDriverTopic } from './driverChat';
 
 const MAX_TRIES = 5;
 const linkCode = () => Array.from({ length: 6 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[randomInt(32)]).join('');
@@ -205,8 +205,8 @@ if (bot) {
     if (topicId) await ctx.reply('✅ Connected! Your deliveries have their own topic: “🛵 Deliveries”.');
     await driverSend(
       { ...linked, topicId },
-      `✅ Hi ${d.name}! You’re a Hikma delivery person.\n\nWhen you’re ready for jobs tap “${BTN_ONLINE}”, then “${BTN_LOCATION}”. Tap “${BTN_OFFLINE}” when you stop.`,
-      { reply_markup: driverKeyboard() },
+      `✅ Hi ${escapeHtml(d.name)}! You’re a Hikma delivery person.\n\nReady for jobs? Tap “${BTN_ONLINE}”. Stopping? Tap “${BTN_OFFLINE}”.\n\n${LIVE_HOWTO}`,
+      { parse_mode: 'HTML', reply_markup: driverKeyboard() },
     );
     void logActivity({ actorName: d.name, action: 'driver.link', summary: `${d.name} connected Telegram`, entity: 'driver', entityId: d.id });
   });

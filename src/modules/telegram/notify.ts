@@ -95,7 +95,7 @@ function adminKeyboard(o: FullOrder) {
     if (pickup) kb.text('🏁 Picked up', `o:${id}:PICKED_UP`).row();
     else if (activeOffer?.status === 'accepted') kb.text(`📦 Handed to ${activeOffer.driver.name.split(' ')[0]}`, `o:${id}:handover`).row();
     else if (activeOffer) kb.text('↩️ Cancel driver', `o:${id}:undispatch`).row();
-    else kb.text('🛵 Find nearest driver', `o:${id}:dispatch`).row();
+    else kb.text('🛵 Choose a driver', `o:${id}:pick`).row();
   }
   // Out for delivery: no button — Delivered needs the customer's code (driver) or the admin's confirmation
   kb.text('✖️ Cancel', `o:${id}:CANCELLED`);
@@ -108,7 +108,10 @@ function driverLine(o: FullOrder) {
   const offer = o.deliveryOffers?.[0];
   if (o.status === 'OUT_FOR_DELIVERY' && offer) return `🛵 With <b>${escapeHtml(offer.driver.name)}</b> · 🔐 delivered when the customer’s code is confirmed`;
   if (!offer) return '';
-  if (offer.status === 'offered') return `🛵 Waiting for <b>${escapeHtml(offer.driver.name)}</b> to accept…`;
+  if (offer.status === 'offered') {
+    const by = offer.expiresAt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Addis_Ababa' });
+    return `🛵 Waiting for <b>${escapeHtml(offer.driver.name)}</b> — ⏳ answer by <b>${by}</b> (5 min), then ${offer.auto ? 'the next nearest driver gets it' : 'choose another driver'}`;
+  }
   if (offer.status === 'accepted') return `🛵 <b>${escapeHtml(offer.driver.name)}</b> accepted — at the shop in ~${offer.etaMinutes ?? '?'} min`;
   if (offer.status === 'declined' || offer.status === 'expired') return `🛵 ${escapeHtml(offer.driver.name)} ${offer.status === 'declined' ? 'can’t take it' : 'didn’t answer'} — find another driver`;
   return '';

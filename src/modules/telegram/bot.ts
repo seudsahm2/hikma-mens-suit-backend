@@ -189,6 +189,28 @@ if (bot) {
     if (input) await collectChannelPost(input);
   });
 
+  // Driver chosen from the list: "od:<orderId>:<driverId|auto|back>"
+  bot.callbackQuery(/^od:([a-z0-9]+):([a-z0-9]+)$/, async (ctx) => {
+    const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
+    if (!settings?.adminChatId || String(ctx.chat?.id) !== settings.adminChatId) return ctx.answerCallbackQuery({ text: 'Not allowed here' });
+    const [, orderId, pick] = ctx.match;
+    const { refreshAdminCards } = await import('./notify');
+    if (pick === 'back') {
+      await ctx.answerCallbackQuery();
+      return refreshAdminCards(orderId!);
+    }
+    const actor = ctx.from ? await prisma.user.findUnique({ where: { telegramId: BigInt(ctx.from.id) } }) : null;
+    const staff = actor && actor.role !== 'CUSTOMER' ? actor : null;
+    try {
+      const d = await import('../delivery/dispatch');
+      await d.dispatch(orderId!, pick === 'auto' ? null : pick!, { id: staff?.id ?? null, fullName: staff?.fullName ?? ctx.from?.first_name ?? 'Admin' });
+      await ctx.answerCallbackQuery({ text: '✅ Sent — the driver has 5 minutes to answer' });
+    } catch (err) {
+      await ctx.answerCallbackQuery({ text: (err as Error).message.slice(0, 190), show_alert: true });
+    }
+    await refreshAdminCards(orderId!);
+  });
+
   // Admin order actions from the group card: "o:<orderId>:<action>"
   bot.callbackQuery(/^o:([a-z0-9]+):([A-Za-z_]+)$/, async (ctx) => {
     const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
@@ -202,6 +224,21 @@ if (bot) {
     // Imported lazily to avoid a circular import (orders.service → notify → bot)
     const { changeStatus, reviewPayment } = await import('../orders/orders.service');
     const { refreshAdminCards } = await import('./notify');
+    if (action === 'pick') {
+      // Driver list, nearest first (free + online on top) — the staff member picks, or lets the bot choose
+      const { rankedDrivers } = await import('../delivery/dispatch');
+      const list = await rankedDrivers();
+      const kb = new InlineKeyboard().text('⚡ Nearest free driver (auto)', `od:${orderId}:auto`).row();
+      for (const b of list.slice(0, 8)) {
+        const dot = b.busy ? '🔴' : b.driver.isOnline ? '🟢' : '⚪';
+        const dist = b.distanceKm !== null ? ` · ${b.distanceKm} km${b.fresh ? '' : ' (old)'}` : ' · no location';
+        kb.text(`${dot} ${b.driver.name}${dist}${b.busy ? ' · busy' : ''}`, `od:${orderId}:${b.driver.id}`).row();
+      }
+      kb.text('↩️ Back', `od:${orderId}:back`);
+      await ctx.answerCallbackQuery({ text: list.length ? '🟢 online · ⚪ offline · 🔴 busy' : 'No drivers linked yet' });
+      await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => undefined);
+      return;
+    }
     try {
       const actorId = actor && actor.role !== 'CUSTOMER' ? actor.id : null;
       if (action === 'verify') await reviewPayment(orderId!, actorId, { approve: true });
@@ -210,8 +247,8 @@ if (bot) {
         // Same delivery flow as the admin: find the nearest driver → driver accepts → shop hands over
         const d = await import('../delivery/dispatch');
         const staff = actor && actor.role !== 'CUSTOMER' ? actor : null;
-        if (action === 'dispatch') await d.dispatch(orderId!, null, { id: staff?.id ?? '', fullName: staff?.fullName ?? who });
-        else if (action === 'handover') await d.handover(orderId!, actorId ?? '');
+        if (action === 'dispatch') await d.dispatch(orderId!, null, { id: staff?.id ?? null, fullName: staff?.fullName ?? who });
+        else if (action === 'handover') await d.handover(orderId!, actorId);
         else await d.cancelDispatch(orderId!);
       } else if (action === 'DELIVERED' || action === 'OUT_FOR_DELIVERY') {
         throw Object.assign(new Error(action === 'DELIVERED' ? 'Delivered = the driver types the customer’s code (or confirm it in the admin)' : 'Use “Find nearest driver”, then “Handed over”'), { code: 'USE_FLOW' });

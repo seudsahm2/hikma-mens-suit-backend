@@ -13,12 +13,22 @@ import { bot } from '../telegram/bot';
 
 export const BTN_ONLINE = '🟢 Online';
 export const BTN_OFFLINE = '⚪ Offline';
-export const BTN_LOCATION = '📍 Send my location';
-export const DRIVER_BUTTONS = [BTN_ONLINE, BTN_OFFLINE, BTN_LOCATION];
+export const BTN_LIVE = '📡 Share live location';
+/** Live location only — a one-time pin goes stale the moment the driver moves. */
+export const LIVE_HOWTO = [
+  '📡 <b>Share your LIVE location</b> (once a day, 3 taps):',
+  '',
+  '1️⃣ Tap 📎 (the paperclip, next to the message box)',
+  '2️⃣ Tap <b>Location</b>',
+  '3️⃣ Tap <b>Share My Live Location</b> → choose <b>8 hours</b>',
+  '',
+  'The shop then always sees where you are and sends you the nearest jobs. ✅',
+].join(String.fromCharCode(10));
+export const DRIVER_BUTTONS = [BTN_ONLINE, BTN_OFFLINE, BTN_LIVE];
 
 export function driverKeyboard(): ReplyKeyboardMarkup {
   return {
-    keyboard: [[{ text: BTN_ONLINE }, { text: BTN_OFFLINE }], [{ text: BTN_LOCATION, request_location: true }]],
+    keyboard: [[{ text: BTN_ONLINE }, { text: BTN_OFFLINE }], [{ text: BTN_LIVE }]],
     resize_keyboard: true,
     is_persistent: true,
     input_field_placeholder: 'Deliveries',

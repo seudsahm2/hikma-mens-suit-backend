@@ -17,7 +17,7 @@ import { conflict, notFound } from '../../lib/http';
 import { bot } from '../telegram/bot';
 import { birr, escapeHtml } from '../telegram/media';
 import { logActivity } from '../admin/activity';
-import { BTN_LOCATION, BTN_OFFLINE, BTN_ONLINE, driverKeyboard, driverSend, driverSendLocation } from './driverChat';
+import { BTN_LIVE, BTN_OFFLINE, BTN_ONLINE, LIVE_HOWTO, driverKeyboard, driverSend, driverSendLocation } from './driverChat';
 
 export const OFFER_MINUTES = 5;
 const MAX_AUTO_TRIES = 3;
@@ -64,18 +64,30 @@ export async function driverBoard() {
   });
 }
 
+/** Linked drivers, best first: free + online, then fresh location, then nearest to the shop. */
+export async function rankedDrivers() {
+  const board = (await driverBoard()).filter((b) => b.driver.isActive && b.driver.telegramId);
+  const ready = (b: (typeof board)[number]) => (b.driver.isOnline && !b.busy ? 0 : 1);
+  return board.sort((a, b) => ready(a) - ready(b) || rank(a, b));
+}
+
 /** Best available driver for an order: online, linked, not busy, nearest to the shop (fresh location first). */
 async function pickDriver(exclude: Set<string>) {
   const board = await driverBoard();
   const candidates = board.filter((b) => b.driver.isActive && b.driver.telegramId && b.driver.isOnline && !b.busy && !exclude.has(b.driver.id));
-  candidates.sort((a, b) => {
+  candidates.sort(rank);
+  return candidates[0] ?? null;
+}
+
+type BoardRow = Awaited<ReturnType<typeof driverBoard>>[number];
+function rank(a: BoardRow, b: BoardRow) {
+  {
     if (a.fresh !== b.fresh) return a.fresh ? -1 : 1;
     if (a.distanceKm !== null && b.distanceKm !== null) return a.distanceKm - b.distanceKm;
     if (a.distanceKm !== null) return -1;
     if (b.distanceKm !== null) return 1;
     return (b.driver.locationAt?.getTime() ?? 0) - (a.driver.locationAt?.getTime() ?? 0);
-  });
-  return candidates[0] ?? null;
+  }
 }
 
 async function tellStaff(text: string) {
@@ -133,7 +145,7 @@ async function offerTo(orderId: string, driverId: string, auto: boolean) {
 }
 
 /** Staff: find the nearest driver (driverId omitted) or offer to a chosen driver. */
-export async function dispatch(orderId: string, driverId: string | null, actor: { id: string; fullName: string }) {
+export async function dispatch(orderId: string, driverId: string | null, actor: { id: string | null; fullName: string }) {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order) throw notFound('Order not found');
   assertDispatchable(order);
@@ -167,7 +179,7 @@ export async function cancelDispatch(orderId: string) {
 }
 
 /** Staff: the driver took the items → order is on the way (customer gets the code, driver the delivery card). */
-export async function handover(orderId: string, actorId: string) {
+export async function handover(orderId: string, actorId: string | null) {
   const offer = await prisma.deliveryOffer.findFirst({ where: { orderId, status: 'accepted' }, include: { driver: true } });
   if (!offer) throw conflict('No driver has accepted this order yet', 'NOT_ACCEPTED');
   const { changeStatus } = await import('../orders/orders.service');
@@ -310,8 +322,8 @@ if (bot) {
       d,
       fresh
         ? `🟢 You’re online, ${d.name}. New jobs near you will arrive here.`
-        : `🟢 You’re online, ${d.name}.\n\n📍 Tap “${BTN_LOCATION}” below so the shop gives you the nearest jobs.\nEven better: 📎 → Location → “Share My Live Location” (it updates by itself for 8 hours).`,
-      { reply_markup: driverKeyboard() },
+        : `🟢 You’re online, ${escapeHtml(d.name)}.\n\n${LIVE_HOWTO}`,
+      { parse_mode: 'HTML', reply_markup: driverKeyboard() },
     );
   };
   const goOffline = async (telegramId: number) => {
@@ -320,6 +332,11 @@ if (bot) {
   };
 
   bot.hears(BTN_ONLINE, (ctx) => (ctx.chat.type === 'private' && ctx.from ? goOnline(ctx.from.id) : undefined));
+  bot.hears(BTN_LIVE, async (ctx) => {
+    if (ctx.chat.type !== 'private' || !ctx.from) return;
+    const d = await prisma.driver.findUnique({ where: { telegramId: BigInt(ctx.from.id) } });
+    if (d) await driverSend(d, LIVE_HOWTO, { parse_mode: 'HTML', reply_markup: driverKeyboard() });
+  });
   bot.hears(BTN_OFFLINE, (ctx) => (ctx.chat.type === 'private' && ctx.from ? goOffline(ctx.from.id) : undefined));
   bot.command('online', (ctx) => (ctx.chat.type === 'private' && ctx.from ? goOnline(ctx.from.id) : undefined));
   bot.command('offline', (ctx) => (ctx.chat.type === 'private' && ctx.from ? goOffline(ctx.from.id) : undefined));
@@ -332,15 +349,14 @@ if (bot) {
     if (ctx.chat.type !== 'private') return next();
     const d = await prisma.driver.findUnique({ where: { telegramId: BigInt(ctx.from.id) } });
     if (!d) return next();
+    // Only LIVE location counts — a one-time pin is stale as soon as the driver moves
+    if (!ctx.message.location.live_period) {
+      await driverSend(d, `⚠️ That’s a one-time pin — the shop needs your <b>live</b> location.\n\n${LIVE_HOWTO}`, { parse_mode: 'HTML', reply_markup: driverKeyboard() });
+      return;
+    }
     await saveLocation(ctx.from.id, ctx.message.location.latitude, ctx.message.location.longitude);
     if (!d.isOnline) await prisma.driver.update({ where: { id: d.id }, data: { isOnline: true } });
-    await driverSend(
-      d,
-      ctx.message.location.live_period
-        ? '📍 Live location on — the shop sees you’re nearby. You’re online.'
-        : '📍 Got it — you’re online. Tip: 📎 → Location → “Share My Live Location” keeps it updated by itself.',
-      { reply_markup: driverKeyboard() },
-    );
+    await driverSend(d, '📡 Live location on — you’re online and the shop sees you. Tap ⚪ Offline when you stop.', { reply_markup: driverKeyboard() });
   });
   bot.on('edited_message:location', async (ctx) => {
     if (ctx.chat.type !== 'private' || !ctx.from) return;
