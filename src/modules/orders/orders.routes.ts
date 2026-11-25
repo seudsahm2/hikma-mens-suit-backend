@@ -90,3 +90,32 @@ ordersRouter.post(
     res.json({ order: serializeOrder(updated) });
   }),
 );
+
+/**
+ * "Send to my Telegram": the receipt image made on the customer's phone is sent to their own chat
+ * with the bot — saving / forwarding works there everywhere (inside Telegram, downloads often don't).
+ */
+ordersRouter.post(
+  '/:orderNumber/receipt',
+  limiter({ windowMs: 60 * 60_000, limit: 20 }),
+  imageUpload.single('image'),
+  ah(async (req, res) => {
+    const order = await prisma.order.findFirst({ where: { orderNumber: req.params.orderNumber, userId: req.user!.id } });
+    if (!order) throw notFound('Order not found');
+    const file = req.file;
+    if (!file || file.mimetype !== 'image/png' || file.size > 4 * 1024 * 1024) throw badRequest('Receipt image missing', 'NO_IMAGE');
+    const chatId = req.user!.telegramId;
+    const { bot } = await import('../telegram/bot');
+    if (!bot) throw badRequest('Telegram isn’t available right now — use Save image instead', 'TELEGRAM_OFF');
+    if (!chatId) throw badRequest('Sign in with Telegram to receive it there', 'NO_TELEGRAM');
+    const { InputFile } = await import('grammy');
+    try {
+      await bot.api.sendDocument(Number(chatId), new InputFile(file.buffer, `Hikma-${order.orderNumber}.png`), {
+        caption: `🧾 Receipt · ${order.orderNumber}`,
+      });
+    } catch {
+      throw badRequest('We couldn’t reach your Telegram — open @' + (await import('../../config/env')).env.TELEGRAM_BOT_USERNAME + ' and tap Start, then try again', 'TELEGRAM_BLOCKED');
+    }
+    res.json({ ok: true });
+  }),
+);
