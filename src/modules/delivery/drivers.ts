@@ -9,7 +9,7 @@
  */
 import { randomInt } from 'node:crypto';
 import { Router } from 'express';
-import { InlineKeyboard } from 'grammy';
+import { InlineKeyboard, type Context } from 'grammy';
 import { z } from 'zod';
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
@@ -193,9 +193,14 @@ export async function checkDeliveryCode(telegramUserId: number, text: string): P
 
 if (bot) {
   // Link: "/driver CODE"
-  bot.command('driver', async (ctx) => {
-    if (ctx.chat.type !== 'private' || !ctx.from) return;
-    const code = String(ctx.match ?? '').trim().toUpperCase();
+  bot.command('driver', (ctx) => linkDriver(ctx, String(ctx.match ?? '')));
+}
+
+/** Links the driver's own Telegram account: from the invite link (/start drv_CODE) or /driver CODE. */
+export async function linkDriver(ctx: Context, raw: string) {
+  {
+    if (ctx.chat?.type !== 'private' || !ctx.from) return;
+    const code = raw.trim().toUpperCase();
     const d = code ? await prisma.driver.findUnique({ where: { linkCode: code } }) : null;
     if (!d || !d.isActive) return void (await ctx.reply('This code isn’t valid. Ask the shop for a new one.'));
     await prisma.driver.updateMany({ where: { telegramId: BigInt(ctx.from.id), id: { not: d.id } }, data: { telegramId: null } });
@@ -209,7 +214,10 @@ if (bot) {
       { parse_mode: 'HTML', reply_markup: driverKeyboard() },
     );
     void logActivity({ actorName: d.name, action: 'driver.link', summary: `${d.name} connected Telegram`, entity: 'driver', entityId: d.id });
-  });
+  }
+}
+
+if (bot) {
 
   bot.callbackQuery(/^dv:([a-z0-9]+):(done|fail)$/, async (ctx) => {
     const [, orderId, action] = ctx.match;

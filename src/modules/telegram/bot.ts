@@ -47,6 +47,11 @@ if (bot) {
 
     // Website sign-in: /start login_<token>. ctx.from is Telegram's own verified sender info.
     const payload = String(ctx.match ?? '');
+    // Driver invite link from the admin: t.me/<bot>?start=drv_CODE
+    if (payload.startsWith('drv_')) {
+      const { linkDriver } = await import('../delivery/drivers');
+      return linkDriver(ctx, payload.slice(4));
+    }
     if (payload.startsWith('login_') && ctx.from) {
       const ok = await confirmLoginToken(payload.slice(6), {
         id: ctx.from.id,
