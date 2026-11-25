@@ -68,6 +68,9 @@ async function markDelivered(orderId: string, note: string) {
   const { refreshAdminCards } = await import('../telegram/notify');
   await changeStatus(orderId, 'DELIVERED', null, note, { trusted: true }); // driver typed the code / customer confirmed
   await refreshAdminCards(orderId).catch(() => undefined);
+  // The shop hears about every confirmed delivery (note says who and how much was collected)
+  const o = await prisma.order.findUnique({ where: { id: orderId }, select: { orderNumber: true } });
+  if (o) await alertStaff(`✅ <b>${escapeHtml(o.orderNumber)}</b> delivered — ${escapeHtml(note)}.`);
 }
 
 // ─── Admin ───────────────────────────────────────────────

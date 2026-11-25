@@ -28,6 +28,10 @@ model User {
   telegramId       BigInt?   @unique
   staffTelegramId  BigInt?   @unique // owner/admin: their Telegram, for actions on the order cards
   staffLinkCode    String?   @unique
+  /// password reset by a code sent to staffTelegramId (sha256 of the code)
+  resetCodeHash    String?
+  resetExpires     DateTime?
+  resetTries       Int       @default(0)
   telegramUsername String?
   photoUrl         String?
   languageCode     String    @default("en")
@@ -776,6 +780,10 @@ model DeliveryOffer {
   respondedAt DateTime?
   /// Telegram message of the offer card (to edit it later)
   messageId   Int?
+  /// handed to the driver (order went out for delivery)
+  handedAt    DateTime?
+  /// "taking longer than expected" alert sent to the shop
+  lateAlertAt DateTime?
 
   order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
   driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)

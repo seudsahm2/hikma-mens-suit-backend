@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
 import { limiter } from '../../middleware/rateLimit';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
@@ -171,6 +172,65 @@ authRouter.post(
       (await bcrypt.compare(req.body.password, user.passwordHash));
     if (!ok || !user) throw unauthorized('Wrong phone or password');
     res.json({ token: signToken({ sub: user.id, role: user.role }), user: publicUser(user) });
+  }),
+);
+
+// Forgot password (staff): a 6-digit code goes to the Telegram connected in Settings → Telegram → You.
+// The answer never says whether the phone exists or has Telegram (no account probing).
+const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+const RESET_MINUTES = 10;
+
+authRouter.post(
+  '/staff/forgot',
+  staffLoginLimiter,
+  validate(z.object({ phone: z.string().min(9).max(20) })),
+  ah(async (req, res) => {
+    const phone = normalizeEthiopianPhone(req.body.phone);
+    const user = phone ? await prisma.user.findUnique({ where: { phone } }) : null;
+    if (user && user.isActive && user.role !== 'CUSTOMER' && user.staffTelegramId) {
+      const code = String(randomInt(100000, 1000000));
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { resetCodeHash: sha(code), resetExpires: new Date(Date.now() + RESET_MINUTES * 60_000), resetTries: 0 },
+      });
+      const { bot } = await import('../telegram/bot');
+      await bot?.api
+        .sendMessage(
+          Number(user.staffTelegramId),
+          `🔐 Your Hikma admin password reset code: <b>${code}</b>\n\nIt works for ${RESET_MINUTES} minutes. Didn’t ask for it? Ignore this — your password stays the same.`,
+          { parse_mode: 'HTML' },
+        )
+        .catch(() => undefined);
+    }
+    res.json({ ok: true });
+  }),
+);
+
+authRouter.post(
+  '/staff/reset',
+  staffLoginLimiter,
+  validate(z.object({ phone: z.string().min(9).max(20), code: z.string().trim().regex(/^\d{6}$/), password: z.string().min(8).max(200) })),
+  ah(async (req, res) => {
+    const phone = normalizeEthiopianPhone(req.body.phone);
+    const user = phone ? await prisma.user.findUnique({ where: { phone } }) : null;
+    const bad = () => badRequest('Wrong or expired code — ask for a new one');
+    if (!user || user.role === 'CUSTOMER' || !user.resetCodeHash || !user.resetExpires || user.resetExpires < new Date()) throw bad();
+    if (user.resetTries >= 5) {
+      await prisma.user.update({ where: { id: user.id }, data: { resetCodeHash: null, resetExpires: null } });
+      throw bad();
+    }
+    const given = Buffer.from(sha(req.body.code));
+    if (!timingSafeEqual(given, Buffer.from(user.resetCodeHash))) {
+      await prisma.user.update({ where: { id: user.id }, data: { resetTries: { increment: 1 } } });
+      throw bad();
+    }
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: await bcrypt.hash(req.body.password, 12), resetCodeHash: null, resetExpires: null, resetTries: 0 },
+    });
+    const { bot } = await import('../telegram/bot');
+    if (updated.staffTelegramId) await bot?.api.sendMessage(Number(updated.staffTelegramId), '✅ Your Hikma admin password was changed.').catch(() => undefined);
+    res.json({ token: signToken({ sub: updated.id, role: updated.role }), user: publicUser(updated) });
   }),
 );
 

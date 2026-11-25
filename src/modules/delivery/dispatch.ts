@@ -88,11 +88,14 @@ function rank(a: BoardRow, b: BoardRow) {
   return (b.driver.locationAt?.getTime() ?? 0) - (a.driver.locationAt?.getTime() ?? 0);
 }
 
-async function tellStaff(text: string) {
+async function tellStaff(text: string, kb?: InlineKeyboard) {
   if (!bot) return;
   const s = await prisma.settings.findUnique({ where: { id: 'default' } });
-  if (s?.adminChatId) await bot.api.sendMessage(s.adminChatId, text, { parse_mode: 'HTML' }).catch(() => undefined);
+  if (s?.adminChatId) await bot.api.sendMessage(s.adminChatId, text, { parse_mode: 'HTML', ...(kb ? { reply_markup: kb } : {}) }).catch(() => undefined);
 }
+
+/** One-tap "pick another driver" under staff messages (opens the nearest-first list on the bot). */
+const pickAgain = (orderId: string) => new InlineKeyboard().text('🛵 Choose another driver', `o:${orderId}:pick`);
 
 function assertDispatchable(o: { status: string; deliveryOptionId: string }) {
   if (o.deliveryOptionId === 'pickup') throw conflict('This order is picked up at the shop', 'PICKUP');
@@ -184,7 +187,7 @@ export async function handover(orderId: string, actorId: string | null) {
   const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
   if (order.status === 'CONFIRMED') await changeStatus(orderId, 'PACKING', actorId); // one step at a time
   if (order.status !== 'OUT_FOR_DELIVERY') await changeStatus(orderId, 'OUT_FOR_DELIVERY', actorId, `Handed to ${offer.driver.name}`, { trusted: true });
-  await prisma.deliveryOffer.update({ where: { id: offer.id }, data: { status: 'completed' } });
+  await prisma.deliveryOffer.update({ where: { id: offer.id }, data: { status: 'completed', handedAt: new Date() } });
   const { sendDriverCard } = await import('./drivers');
   await sendDriverCard(orderId).catch((err) => logger.warn({ err }, 'delivery card failed'));
   refreshCards(orderId);
@@ -228,7 +231,7 @@ export async function respond(offerId: string, telegramId: number, answer: 'no' 
   }
   if (answer === 'no') {
     await prisma.deliveryOffer.update({ where: { id: offer.id }, data: { status: 'declined', respondedAt: new Date() } });
-    await tellStaff(`❌ <b>${escapeHtml(offer.driver.name)}</b> can’t take <b>${escapeHtml(offer.order.orderNumber)}</b>.${offer.auto ? ' Trying the next driver…' : ''}`);
+    await tellStaff(`❌ <b>${escapeHtml(offer.driver.name)}</b> can’t take <b>${escapeHtml(offer.order.orderNumber)}</b>.${offer.auto ? ' Trying the next driver…' : ''}`, offer.auto ? undefined : pickAgain(offer.orderId));
     if (offer.auto) await next(offer.orderId);
     refreshCards(offer.orderId);
     return { text: 'OK, thanks — we’ll ask someone else.', done: 'declined' as const };
@@ -248,12 +251,12 @@ async function next(orderId: string) {
   if (!order || ['OUT_FOR_DELIVERY', 'DELIVERED', 'PICKED_UP', 'CANCELLED'].includes(order.status)) return;
   const tried = await prisma.deliveryOffer.findMany({ where: { orderId }, select: { driverId: true } });
   if (tried.length >= MAX_AUTO_TRIES) {
-    await tellStaff(`⚠️ No driver took <b>${escapeHtml(order.orderNumber)}</b> after ${tried.length} tries — please pick one in the admin.`);
+    await tellStaff(`⚠️ No driver took <b>${escapeHtml(order.orderNumber)}</b> after ${tried.length} tries — please pick one.`, pickAgain(orderId));
     return;
   }
   const best = await pickDriver(new Set(tried.map((t) => t.driverId)));
   if (!best) {
-    await tellStaff(`⚠️ No other driver is free for <b>${escapeHtml(order.orderNumber)}</b> — please pick one in the admin.`);
+    await tellStaff(`⚠️ No other driver is free for <b>${escapeHtml(order.orderNumber)}</b> — please pick one.`, pickAgain(orderId));
     return;
   }
   await offerTo(orderId, best.driver.id, true);
@@ -266,9 +269,45 @@ async function expire(offerId: string) {
   if (bot && o.driver.telegramId && o.messageId) {
     await bot.api.editMessageReplyMarkup(Number(o.driver.telegramId), o.messageId, { reply_markup: undefined }).catch(() => undefined);
   }
-  await tellStaff(`⌛ <b>${escapeHtml(o.driver.name)}</b> didn’t answer for <b>${escapeHtml(o.order.orderNumber)}</b>.${o.auto ? ' Trying the next driver…' : ' Pick another driver in the admin.'}`);
+  await tellStaff(`⌛ <b>${escapeHtml(o.driver.name)}</b> didn’t answer for <b>${escapeHtml(o.order.orderNumber)}</b>.${o.auto ? ' Trying the next driver…' : ''}`, o.auto ? undefined : pickAgain(o.orderId));
   if (o.auto) await next(o.orderId);
   refreshCards(o.orderId);
+}
+
+/** Minutes after the handover before the shop hears "taking longer than expected". */
+const LATE_MINUTES = 60;
+
+async function checkLate() {
+  const late = await prisma.deliveryOffer.findMany({
+    where: { status: 'completed', lateAlertAt: null, handedAt: { lt: new Date(Date.now() - LATE_MINUTES * 60_000) }, order: { status: 'OUT_FOR_DELIVERY' } },
+    include: { driver: true, order: true },
+    take: 10,
+  });
+  for (const o of late) {
+    const claimed = await prisma.deliveryOffer.updateMany({ where: { id: o.id, lateAlertAt: null }, data: { lateAlertAt: new Date() } });
+    if (!claimed.count) continue;
+    await tellStaff(
+      `⏰ <b>${escapeHtml(o.order.orderNumber)}</b> is taking longer than expected — out with <b>${escapeHtml(o.driver.name)}</b> for over ${LATE_MINUTES} min and not confirmed yet.` +
+        (o.driver.phone ? `
+📞 <a href="tel:${o.driver.phone}">${o.driver.phone}</a>` : ''),
+      new InlineKeyboard().text(`📨 Ask ${o.driver.name.split(' ')[0]} what happened`, `lt:${o.orderId}`),
+    );
+  }
+}
+
+/** Shop → driver: "what happened?" with one-tap answers (answers come back to the shop chat). */
+export async function askDriver(orderId: string) {
+  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { driver: true } });
+  if (!order?.driver || order.status !== 'OUT_FOR_DELIVERY') throw conflict('This order isn’t out with a driver', 'NOT_OUT');
+  const kb = new InlineKeyboard()
+    .text('✅ Delivered — enter code', `dv:${orderId}:done`)
+    .row()
+    .text('🛵 On my way', `dr:${orderId}:way`)
+    .text('📵 Customer not answering', `dr:${orderId}:noanswer`)
+    .row()
+    .text('⚠️ Can’t deliver', `dv:${orderId}:fail`);
+  await driverSend(order.driver, `❓ The shop is asking about <b>${escapeHtml(order.orderNumber)}</b> — what’s happening?`, { parse_mode: 'HTML', reply_markup: kb });
+  return order.driver.name;
 }
 
 /** Expires unanswered offers (and moves on). */
@@ -277,6 +316,7 @@ export function startDispatchWorker() {
     try {
       const due = await prisma.deliveryOffer.findMany({ where: { status: 'offered', expiresAt: { lt: new Date() } }, select: { id: true }, take: 20 });
       for (const d of due) await expire(d.id);
+      await checkLate();
     } catch (err) {
       logger.warn({ err }, 'dispatch worker failed');
     }
@@ -295,6 +335,33 @@ async function setOnline(telegramId: number, online: boolean) {
 }
 
 if (bot) {
+  bot.callbackQuery(/^lt:([a-z0-9]+)$/, async (ctx) => {
+    const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
+    if (!settings?.adminChatId || String(ctx.chat?.id) !== settings.adminChatId) return void (await ctx.answerCallbackQuery({ text: 'Not allowed here' }));
+    try {
+      const name = await askDriver(ctx.match[1]!);
+      await ctx.answerCallbackQuery({ text: `📨 Asked ${name} — the answer comes here` });
+    } catch (err) {
+      await ctx.answerCallbackQuery({ text: (err as Error).message.slice(0, 190), show_alert: true });
+    }
+  });
+
+  bot.callbackQuery(/^dr:([a-z0-9]+):(way|noanswer)$/, async (ctx) => {
+    const [, orderId, a] = ctx.match;
+    const driver = await prisma.driver.findUnique({ where: { telegramId: BigInt(ctx.from.id) } });
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!driver || !order || order.driverId !== driver.id) return void (await ctx.answerCallbackQuery({ text: 'This order isn’t assigned to you', show_alert: true }));
+    await ctx.answerCallbackQuery({ text: '✅ Sent to the shop' });
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
+    await tellStaff(
+      a === 'way'
+        ? `🛵 <b>${escapeHtml(driver.name)}</b>: on the way with <b>${escapeHtml(order.orderNumber)}</b>.`
+        : `📵 <b>${escapeHtml(driver.name)}</b>: the customer of <b>${escapeHtml(order.orderNumber)}</b> isn’t answering. Call them: <a href="tel:${order.customerPhone}">${order.customerPhone}</a>`,
+      new InlineKeyboard().text('📨 Ask again', `lt:${orderId}`),
+    );
+    if (a === 'way') await prisma.deliveryOffer.updateMany({ where: { orderId: order.id, status: 'completed' }, data: { lateAlertAt: null, handedAt: new Date() } }); // remind again later
+  });
+
   bot.callbackQuery(/^jo:([a-z0-9]+):(no|\d{1,3})$/, async (ctx) => {
     const [, offerId, a] = ctx.match;
     const r = await respond(offerId!, ctx.from.id, a === 'no' ? 'no' : Number(a));
