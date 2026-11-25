@@ -264,3 +264,33 @@ authRouter.post(
     res.json({ url: `https://t.me/${env.TELEGRAM_BOT_USERNAME}?start=stf_${code}`, connected: user.staffTelegramId !== null });
   }),
 );
+
+/** Staff: which Telegram is connected (name looked up live from Telegram). */
+authRouter.get(
+  '/staff-telegram',
+  requireAuth,
+  ah(async (req, res) => {
+    const user = req.user!;
+    if (user.role === 'CUSTOMER') throw unauthorized('Staff only');
+    res.set('Cache-Control', 'no-store');
+    if (!user.staffTelegramId) return void res.json({ connected: false });
+    const { bot } = await import('../telegram/bot');
+    const chat = bot ? ((await bot.api.getChat(Number(user.staffTelegramId)).catch(() => null)) as { first_name?: string; last_name?: string; username?: string } | null) : null;
+    res.json({
+      connected: true,
+      name: [chat?.first_name, chat?.last_name].filter(Boolean).join(' ') || 'Telegram account',
+      username: chat?.username ?? null,
+    });
+  }),
+);
+
+authRouter.delete(
+  '/staff-telegram',
+  requireAuth,
+  ah(async (req, res) => {
+    const user = req.user!;
+    if (user.role === 'CUSTOMER') throw unauthorized('Staff only');
+    await prisma.user.update({ where: { id: user.id }, data: { staffTelegramId: null, staffLinkCode: null } });
+    res.json({ connected: false });
+  }),
+);
