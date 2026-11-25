@@ -108,7 +108,7 @@ driversRouter.get(
   ah(async (_req, res) => {
     const [board, cash] = await Promise.all([driverBoard(), cashByDriver()]);
     res.json({
-      drivers: board.map(({ driver: d, busy, fresh, distanceKm }) => ({
+      drivers: board.map(({ driver: d, busy, busyWith, fresh, distanceKm }) => ({
         id: d.id,
         name: d.name,
         phone: d.phone,
@@ -117,6 +117,7 @@ driversRouter.get(
         linkCode: d.telegramId ? null : d.linkCode,
         isOnline: d.isOnline,
         busy,
+        busyWith,
         live: fresh,
         distanceKm,
         locationAt: d.locationAt,

@@ -38,12 +38,20 @@ async function shopPoint() {
 }
 
 /** Drivers with a job offered/accepted, or an order on the way. */
+/** Busy drivers → the order keeping them busy (shown in the admin so a stuck order is easy to find). */
 async function busyDriverIds() {
   const [offers, onTheWay] = await Promise.all([
-    prisma.deliveryOffer.findMany({ where: { status: { in: ['offered', 'accepted'] } }, select: { driverId: true } }),
-    prisma.order.findMany({ where: { status: 'OUT_FOR_DELIVERY', driverId: { not: null } }, select: { driverId: true } }),
+    // Only offers on orders that are still open (an offer left behind by a finished/cancelled order doesn't count)
+    prisma.deliveryOffer.findMany({
+      where: { status: { in: ['offered', 'accepted'] }, order: { status: { in: ['PENDING', 'CONFIRMED', 'PACKING'] } } },
+      select: { driverId: true, order: { select: { id: true, orderNumber: true } } },
+    }),
+    prisma.order.findMany({ where: { status: 'OUT_FOR_DELIVERY', driverId: { not: null } }, select: { driverId: true, id: true, orderNumber: true } }),
   ]);
-  return new Set([...offers.map((o) => o.driverId), ...onTheWay.map((o) => o.driverId!)]);
+  const map = new Map<string, { id: string; orderNumber: string }>();
+  for (const o of offers) map.set(o.driverId, o.order);
+  for (const o of onTheWay) map.set(o.driverId!, { id: o.id, orderNumber: o.orderNumber });
+  return map;
 }
 
 export function locationFresh(d: Pick<Driver, 'locationAt'>) {
@@ -58,6 +66,7 @@ export async function driverBoard() {
     return {
       driver: d,
       busy: busy.has(d.id),
+      busyWith: busy.get(d.id) ?? null,
       fresh,
       distanceKm: shop && d.lat != null && d.lng != null ? Math.round(km(shop, { lat: d.lat, lng: d.lng }) * 10) / 10 : null,
     };
@@ -348,6 +357,14 @@ export async function askDriver(orderId: string) {
   return order.driver.name;
 }
 
+/** Closes offers left open on orders that already finished (e.g. cancelled before drivers were told). */
+async function closeOrphanOffers() {
+  await prisma.deliveryOffer.updateMany({
+    where: { status: { in: ['offered', 'accepted'] }, order: { status: { in: ['DELIVERED', 'PICKED_UP', 'CANCELLED', 'OUT_FOR_DELIVERY'] } } },
+    data: { status: 'cancelled', respondedAt: new Date() },
+  });
+}
+
 /** Expires unanswered offers (and moves on). */
 export function startDispatchWorker() {
   const timer = setInterval(async () => {
@@ -355,6 +372,7 @@ export function startDispatchWorker() {
       const due = await prisma.deliveryOffer.findMany({ where: { status: 'offered', expiresAt: { lt: new Date() } }, select: { id: true }, take: 20 });
       for (const d of due) await expire(d.id);
       await checkLate();
+      await closeOrphanOffers();
       // Staff cancels whose undo window ran out
       await (await import('../orders/orders.service')).commitDueCancels();
     } catch (err) {
