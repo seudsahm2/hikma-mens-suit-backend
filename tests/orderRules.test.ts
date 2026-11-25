@@ -35,3 +35,25 @@ describe('order lifecycle rules', () => {
     expect(nextSteps('DELIVERED', false)).toEqual([]);
   });
 });
+
+describe('finishing step matches the delivery type', () => {
+  it('a delivery order can never be closed as "picked up"', async () => {
+    const { fitsDeliveryType } = await import('../src/modules/orders/rules');
+    expect(fitsDeliveryType('PICKED_UP', false)).toBe(false);
+    expect(fitsDeliveryType('DELIVERED', false)).toBe(true);
+    expect(fitsDeliveryType('OUT_FOR_DELIVERY', false)).toBe(true);
+  });
+  it('a shop-pickup order can never be "delivered" or "on the way"', async () => {
+    const { fitsDeliveryType } = await import('../src/modules/orders/rules');
+    expect(fitsDeliveryType('DELIVERED', true)).toBe(false);
+    expect(fitsDeliveryType('OUT_FOR_DELIVERY', true)).toBe(false);
+    expect(fitsDeliveryType('PICKED_UP', true)).toBe(true);
+  });
+  it('other steps are fine for both', async () => {
+    const { fitsDeliveryType } = await import('../src/modules/orders/rules');
+    for (const s of ['CONFIRMED', 'PACKING', 'CANCELLED'] as const) {
+      expect(fitsDeliveryType(s, true)).toBe(true);
+      expect(fitsDeliveryType(s, false)).toBe(true);
+    }
+  });
+});

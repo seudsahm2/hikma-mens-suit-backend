@@ -28,6 +28,17 @@ export function canMoveTo(from: OrderStatus, to: OrderStatus): boolean {
   return STEP[to] > STEP[from];
 }
 
+/**
+ * The finishing step must match how the order is received: a delivery order ends DELIVERED
+ * (confirmed with the customer's code), a shop-pickup order ends PICKED_UP. Without this, a delivery
+ * order could be closed as "picked up" and skip the delivery code entirely.
+ */
+export function fitsDeliveryType(to: OrderStatus, pickup: boolean): boolean {
+  if (to === 'PICKED_UP') return pickup;
+  if (to === 'DELIVERED' || to === 'OUT_FOR_DELIVERY') return !pickup;
+  return true;
+}
+
 /** Staff can still confirm (or reject) the payment. */
 export function canReviewPayment(status: OrderStatus, payment: PaymentStatus) {
   return !isFinalStatus(status) && (payment === 'UNPAID' || payment === 'SUBMITTED' || payment === 'REJECTED');

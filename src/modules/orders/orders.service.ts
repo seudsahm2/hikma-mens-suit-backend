@@ -7,7 +7,7 @@ import { getSettings } from '../settings/settings.service';
 import { canAutoVerify, verifyTransaction } from '../payments/shegerpay';
 import { notifyOrderEvent } from '../telegram/notify';
 import { onStockRestored } from '../alerts/backInStock';
-import { canMoveTo, isFinalStatus, STATUS_LABEL } from './rules';
+import { canMoveTo, fitsDeliveryType, isFinalStatus, STATUS_LABEL } from './rules';
 import { mergeSizeProfile } from '../../lib/sizeProfile';
 import { creditBalance, quote, type DiscountLine } from '../pricing/pricing';
 import { onOrderCancelled, onOrderPlaced, onOrderReceived, safely } from '../pricing/rewards';
@@ -431,6 +431,14 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
         ? `This order is already ${STATUS_LABEL[order.status]} — it can’t be changed`
         : `This order is already ${STATUS_LABEL[order.status]} — it can’t go back to ${STATUS_LABEL[status]}`,
       'STALE',
+    );
+  }
+
+  const pickup = order.deliveryOptionId === 'pickup';
+  if (!fitsDeliveryType(status, pickup)) {
+    throw conflict(
+      pickup ? 'This order is picked up at the shop — use “Picked up”' : 'This is a delivery order — it’s finished with the customer’s delivery code, not “Picked up”',
+      'WRONG_STEP',
     );
   }
 
