@@ -276,10 +276,24 @@ authRouter.get(
     if (!user.staffTelegramId) return void res.json({ connected: false });
     const { bot } = await import('../telegram/bot');
     const chat = bot ? ((await bot.api.getChat(Number(user.staffTelegramId)).catch(() => null)) as { first_name?: string; last_name?: string; username?: string } | null) : null;
+    // Small profile photo as a data URL (the file URL contains the bot token — never sent to the browser)
+    let photo: string | null = null;
+    try {
+      const p = bot ? await bot.api.getUserProfilePhotos(Number(user.staffTelegramId), { limit: 1 }) : null;
+      const small = p?.photos[0]?.[0];
+      if (small && bot) {
+        const file = await bot.api.getFile(small.file_id);
+        const r = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${file.file_path}`);
+        if (r.ok) photo = `data:image/jpeg;base64,${Buffer.from(await r.arrayBuffer()).toString('base64')}`;
+      }
+    } catch {
+      photo = null;
+    }
     res.json({
       connected: true,
       name: [chat?.first_name, chat?.last_name].filter(Boolean).join(' ') || 'Telegram account',
       username: chat?.username ?? null,
+      photo,
     });
   }),
 );
