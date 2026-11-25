@@ -327,6 +327,10 @@ enum OrderSource {
 
 model Order {
   id                String            @id @default(cuid())
+  /// cash taken by a driver on delivery (pay on delivery / balance) — until the shop marks it received
+  cashCollected     Int               @default(0)
+  cashDriverId      String?
+  cashSettledAt     DateTime?
   orderNumber       String            @unique
   userId            String?
   source            OrderSource       @default(WEB)

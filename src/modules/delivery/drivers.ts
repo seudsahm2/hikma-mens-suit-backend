@@ -73,6 +73,25 @@ async function markDelivered(orderId: string, note: string) {
   if (o) await alertStaff(`✅ <b>${escapeHtml(o.orderNumber)}</b> delivered — ${escapeHtml(note)}.`);
 }
 
+// ─── Cash with drivers ───────────────────────────────────
+
+/** Cash each driver collected on delivery and hasn't handed to the shop yet. */
+export async function cashByDriver() {
+  const rows = await prisma.order.findMany({
+    where: { cashCollected: { gt: 0 }, cashSettledAt: null, cashDriverId: { not: null } },
+    select: { id: true, orderNumber: true, cashCollected: true, cashDriverId: true, updatedAt: true },
+    orderBy: { updatedAt: 'asc' },
+  });
+  const map = new Map<string, { amount: number; orders: { orderNumber: string; amount: number; at: Date }[] }>();
+  for (const r of rows) {
+    const e = map.get(r.cashDriverId!) ?? { amount: 0, orders: [] };
+    e.amount += r.cashCollected;
+    e.orders.push({ orderNumber: r.orderNumber, amount: r.cashCollected, at: r.updatedAt });
+    map.set(r.cashDriverId!, e);
+  }
+  return map;
+}
+
 // ─── Admin ───────────────────────────────────────────────
 
 export const driversRouter = Router();
@@ -81,7 +100,7 @@ driversRouter.use(requireStaff);
 driversRouter.get(
   '/drivers',
   ah(async (_req, res) => {
-    const board = await driverBoard();
+    const [board, cash] = await Promise.all([driverBoard(), cashByDriver()]);
     res.json({
       drivers: board.map(({ driver: d, busy, fresh, distanceKm }) => ({
         id: d.id,
@@ -96,6 +115,7 @@ driversRouter.get(
         distanceKm,
         locationAt: d.locationAt,
         mapUrl: d.lat != null && d.lng != null ? `https://maps.google.com/?q=${d.lat},${d.lng}` : null,
+        cash: cash.get(d.id) ?? { amount: 0, orders: [] },
       })),
     });
   }),
@@ -134,6 +154,21 @@ driversRouter.get(
 );
 
 /** Offer the job: to a chosen driver, or the nearest free one (driverId omitted). */
+/** The driver handed the collected cash to the shop. */
+driversRouter.post(
+  '/drivers/:id/cash/received',
+  ah(async (req, res) => {
+    const d = await prisma.driver.findUnique({ where: { id: req.params.id! } });
+    if (!d) throw notFound('Driver not found');
+    const open = await prisma.order.findMany({ where: { cashDriverId: d.id, cashSettledAt: null, cashCollected: { gt: 0 } }, select: { id: true, cashCollected: true } });
+    const amount = open.reduce((n, o) => n + o.cashCollected, 0);
+    if (!open.length) return void res.json({ amount: 0 });
+    await prisma.order.updateMany({ where: { id: { in: open.map((o) => o.id) } }, data: { cashSettledAt: new Date() } });
+    void logActivity({ actorId: req.user!.id, actorName: req.user!.fullName, action: 'driver.cash', summary: `Received ${birr(amount)} cash from ${d.name} (${open.length} order${open.length === 1 ? '' : 's'})`, entity: 'driver', entityId: d.id });
+    res.json({ amount, orders: open.length });
+  }),
+);
+
 driversRouter.post(
   '/orders/:id/dispatch',
   validate(z.object({ driverId: z.string().min(1).max(40).optional() })),

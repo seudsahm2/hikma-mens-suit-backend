@@ -484,6 +484,10 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
       data: {
         status,
         ...(delivered ? { amountPaid: order.total, paymentStatus: 'PAID' } : {}),
+        // Delivered by a driver with money still due → the driver holds that cash until the shop marks it received
+        ...(status === 'DELIVERED' && order.driverId && order.total > order.amountPaid
+          ? { cashCollected: order.total - order.amountPaid, cashDriverId: order.driverId, cashSettledAt: null }
+          : {}),
         // Delivery code for the customer to give the driver (created once, when the order goes out)
         ...(status === 'OUT_FOR_DELIVERY' && order.deliveryOptionId !== 'pickup' && !order.deliveryCode
           ? { deliveryCode: String(randomInt(1000, 10000)), deliveryCodeTries: 0 }

@@ -68,6 +68,14 @@ export async function buildDailyReport(now = new Date()) {
   if (toPrepare) todo.push(`📦 ${toPrepare} order${toPrepare === 1 ? '' : 's'} to prepare`);
   if (onTheWay) todo.push(`🚚 ${onTheWay} on the way`);
   if (drafts) todo.push(`📝 ${drafts} draft${drafts === 1 ? '' : 's'} not on sale yet`);
+  // Cash drivers collected on delivery and haven't handed to the shop yet
+  const { cashByDriver } = await import('../delivery/drivers');
+  const cash = await cashByDriver();
+  if (cash.size) {
+    const drivers = await prisma.driver.findMany({ where: { id: { in: [...cash.keys()] } }, select: { id: true, name: true } });
+    const total = [...cash.values()].reduce((n, c) => n + c.amount, 0);
+    todo.push(`💵 ${birr(total)} cash with drivers: ${drivers.map((d) => `${escapeHtml(d.name)} ${birr(cash.get(d.id)!.amount)}`).join(', ')}`);
+  }
   if (todo.length) lines.push('', ...todo);
 
   if (low.length) {
