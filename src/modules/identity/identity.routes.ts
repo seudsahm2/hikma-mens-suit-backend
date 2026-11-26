@@ -32,6 +32,17 @@ const view = (c: { id: string; fullName: string; gender: string | null; dateOfBi
   verifiedAt: c.createdAt,
 });
 
+/** Who has a verified Fayda ID (badges in the driver / admin lists). */
+identityRouter.get(
+  '/identity-summary',
+  ...owner,
+  ah(async (_req, res) => {
+    const rows = await prisma.identityCheck.findMany({ distinct: ['subjectType', 'subjectId'], select: { subjectType: true, subjectId: true } });
+    res.set('Cache-Control', 'no-store');
+    res.json({ driver: rows.filter((r) => r.subjectType === 'driver').map((r) => r.subjectId), staff: rows.filter((r) => r.subjectType === 'staff').map((r) => r.subjectId) });
+  }),
+);
+
 // (declared before /identity/:type/:id, which would otherwise catch "photo" as a type)
 /** The face photo from the card — only to the owner, never cached by the browser or a proxy. */
 identityRouter.get(
