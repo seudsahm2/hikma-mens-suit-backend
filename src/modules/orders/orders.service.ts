@@ -23,6 +23,9 @@ export function serializeOrder(o: OrderWithRelations, opts: { staff?: boolean } 
     id: o.id,
     orderNumber: o.orderNumber,
     status: o.status,
+    // delivery rating (customer rates the delivery person once, after delivery)
+    driverRating: o.driverRating,
+    canRateDriver: Boolean(o.driverId && o.status === 'DELIVERED' && !o.driverRating),
     // staff only: a cancel counting down (undo window)
     ...(opts.staff ? { cancelAt: o.cancelAt } : {}),
     paymentStatus: o.paymentStatus,

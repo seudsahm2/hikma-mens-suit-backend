@@ -335,6 +335,10 @@ model Order {
   cancelAt          DateTime?
   cancelById        String?
   cancelNote        String?
+  /// customer rates the delivery person (1–5) after delivery
+  driverRating      Int?
+  driverRatingNote  String?
+  driverRatedAt     DateTime?
   orderNumber       String            @unique
   userId            String?
   source            OrderSource       @default(WEB)

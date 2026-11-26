@@ -69,6 +69,18 @@ async function findOwnOrder(orderNumber: string, userId: string, isStaff: boolea
   return order;
 }
 
+/** Customer rates the delivery person (once, delivered orders). */
+ordersRouter.post(
+  '/:orderNumber/rate-driver',
+  validate(z.object({ stars: z.number().int().min(1).max(5), note: z.string().max(300).optional() })),
+  ah(async (req, res) => {
+    const order = await prisma.order.findFirst({ where: { orderNumber: req.params.orderNumber, userId: req.user!.id } });
+    if (!order) throw notFound('Order not found');
+    const { rateDelivery } = await import('../delivery/driverProfile');
+    res.json({ stars: await rateDelivery(order.id, req.body.stars, { userId: req.user!.id }, req.body.note) });
+  }),
+);
+
 ordersRouter.get(
   '/:orderNumber',
   ah(async (req, res) => {

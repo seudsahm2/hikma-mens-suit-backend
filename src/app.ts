@@ -29,6 +29,7 @@ import { adminExchangesRouter, exchangesRouter } from './modules/after/exchanges
 import { adminSupportRouter, supportRouter } from './modules/after/support';
 import { activityRouter, recordActivity } from './modules/admin/activity';
 import { driversRouter } from './modules/delivery/drivers';
+import './modules/delivery/driverProfile'; // registers the ⭐ rating buttons
 import { insightsRouter } from './modules/admin/insights';
 
 installBigIntJson();

@@ -77,6 +77,7 @@ async function markDelivered(orderId: string, note: string) {
   // The shop hears about every confirmed delivery (note says who and how much was collected)
   const o = await prisma.order.findUnique({ where: { id: orderId }, select: { orderNumber: true } });
   if (o) await alertStaff(`✅ <b>${escapeHtml(o.orderNumber)}</b> delivered — ${escapeHtml(note)}.`);
+  void import('./driverProfile').then((m) => m.askDeliveryRating(orderId)).catch(() => undefined);
 }
 
 // ─── Cash with drivers ───────────────────────────────────
@@ -108,7 +109,7 @@ driversRouter.get(
   ah(async (_req, res) => {
     const [board, cash] = await Promise.all([driverBoard(), cashByDriver()]);
     res.json({
-      drivers: board.map(({ driver: d, busy, busyWith, fresh, distanceKm }) => ({
+      drivers: board.map(({ driver: d, busy, busyWith, fresh, distanceKm, rating }) => ({
         id: d.id,
         name: d.name,
         phone: d.phone,
@@ -118,6 +119,7 @@ driversRouter.get(
         isOnline: d.isOnline,
         busy,
         busyWith,
+        rating,
         live: fresh,
         distanceKm,
         locationAt: d.locationAt,
@@ -161,6 +163,16 @@ driversRouter.get(
 );
 
 /** Offer the job: to a chosen driver, or the nearest free one (driverId omitted). */
+/** Owner: one driver's profile — current job, stats, ratings, delivery history. */
+driversRouter.get(
+  '/drivers/:id/profile',
+  ah(async (req, res) => {
+    const { driverProfile } = await import('./driverProfile');
+    res.set('Cache-Control', 'no-store');
+    res.json(await driverProfile(req.params.id!));
+  }),
+);
+
 /** The driver handed the collected cash to the shop. */
 driversRouter.post(
   '/drivers/:id/cash/received',

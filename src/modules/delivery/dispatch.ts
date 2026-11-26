@@ -60,11 +60,21 @@ export function locationFresh(d: Pick<Driver, 'locationAt'>) {
 
 /** Every driver with status for the admin: online, busy, distance to the shop. */
 export async function driverBoard() {
-  const [drivers, busy, shop] = await Promise.all([prisma.driver.findMany({ orderBy: [{ isActive: 'desc' }, { createdAt: 'asc' }] }), busyDriverIds(), shopPoint()]);
+  const [drivers, busy, shop, ratings] = await Promise.all([
+    prisma.driver.findMany({ orderBy: [{ isActive: 'desc' }, { createdAt: 'asc' }] }),
+    busyDriverIds(),
+    shopPoint(),
+    // customers' ⭐ ratings of each driver's deliveries
+    prisma.order.groupBy({ by: ['driverId'], where: { driverRating: { not: null }, driverId: { not: null } }, _avg: { driverRating: true }, _count: { driverRating: true } }),
+  ]);
   return drivers.map((d) => {
     const fresh = locationFresh(d);
     return {
       driver: d,
+      rating: (() => {
+        const r = ratings.find((x) => x.driverId === d.id);
+        return r?._avg.driverRating ? { avg: Math.round(r._avg.driverRating * 10) / 10, count: r._count.driverRating } : null;
+      })(),
       busy: busy.has(d.id),
       busyWith: busy.get(d.id) ?? null,
       fresh,
@@ -91,7 +101,11 @@ async function pickDriver(exclude: Set<string>) {
 type BoardRow = Awaited<ReturnType<typeof driverBoard>>[number];
 function rank(a: BoardRow, b: BoardRow) {
   if (a.fresh !== b.fresh) return a.fresh ? -1 : 1;
-  if (a.distanceKm !== null && b.distanceKm !== null) return a.distanceKm - b.distanceKm;
+  if (a.distanceKm !== null && b.distanceKm !== null) {
+    // About equally close (< 0.5 km apart): the better-rated driver first
+    if (Math.abs(a.distanceKm - b.distanceKm) < 0.5 && (a.rating?.avg ?? 0) !== (b.rating?.avg ?? 0)) return (b.rating?.avg ?? 0) - (a.rating?.avg ?? 0);
+    return a.distanceKm - b.distanceKm;
+  }
   if (a.distanceKm !== null) return -1;
   if (b.distanceKm !== null) return 1;
   return (b.driver.locationAt?.getTime() ?? 0) - (a.driver.locationAt?.getTime() ?? 0);
