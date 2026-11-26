@@ -31,7 +31,9 @@ import { activityRouter, recordActivity } from './modules/admin/activity';
 import { driversRouter } from './modules/delivery/drivers';
 import { backupRouter } from './modules/backup/backup.routes';
 import { staffInvitesRouter } from './modules/admin/staffInvites';
+import { identityRouter } from './modules/identity/identity.routes';
 import './modules/delivery/driverProfile'; // registers the ⭐ rating buttons
+import './modules/telegram/contactShare'; // verified phone numbers (Share my contact)
 import { insightsRouter } from './modules/admin/insights';
 
 installBigIntJson();
@@ -101,6 +103,7 @@ export function createApp() {
   app.use('/api/admin', driversRouter);
   app.use('/api/admin', backupRouter); // owner only
   app.use('/api/admin', staffInvitesRouter); // owner only: admin invites through Telegram
+  app.use('/api/admin', identityRouter); // owner only: Fayda ID checks of delivery people / admins
   app.use('/api/admin/exchanges', adminExchangesRouter);
   app.use('/api/support', supportRouter);
   app.use('/api/admin/support', adminSupportRouter);

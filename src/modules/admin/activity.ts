@@ -100,6 +100,9 @@ async function describe(method: string, path: string, body: Record<string, unkno
   if ((m = p.match(/^\/reviews\/([^/]+)$/))) return { action: 'review', summary: `${body.status === 'hidden' ? 'Hid' : 'Showed'} a review`, entity: 'review', entityId: m[1] };
   if ((m = p.match(/^\/drivers(?:\/([^/]+))?/))) return { action: 'driver', summary: method === 'POST' && !m[1] ? `Added driver ${String(body.name ?? '')}`.trim() : 'Changed a driver', entity: 'driver', entityId: m[1] };
   if (p.startsWith('/categories') || p.startsWith('/brands')) return { action: 'catalog', summary: 'Changed categories / brands', entity: 'catalog' };
+  // Never the card contents — only that a check happened, and for whom
+  if (p === '/identity' && method === 'POST')
+    return { action: 'identity.verify', summary: `Checked the Fayda ID of a ${body.type === 'driver' ? 'delivery person' : 'admin'}`, entity: String(body.type ?? ''), entityId: String(body.id ?? '') };
   return { action: 'other', summary: `${method} ${p}` };
 }
 

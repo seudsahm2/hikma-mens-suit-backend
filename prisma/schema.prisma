@@ -33,6 +33,8 @@ model User {
   resetExpires     DateTime?
   resetTries       Int       @default(0)
   telegramUsername String?
+  /// set when the phone came from Telegram's "Share my contact" (belongs to this Telegram account)
+  phoneVerifiedAt  DateTime?
   photoUrl         String?
   languageCode     String    @default("en")
   // Staff (OWNER / ADMIN) sign in with phone + password
@@ -351,6 +353,8 @@ model Order {
   source            OrderSource       @default(WEB)
   customerName      String
   customerPhone     String
+  /// the phone was Telegram-verified (Share my contact) when the order was placed
+  customerPhoneVerified Boolean @default(false)
   telegramChatId    BigInt?
   deliveryOptionId  String
   deliveryLabel     String
@@ -872,4 +876,28 @@ model StaffInvite {
   expiresAt        DateTime
 
   @@index([status])
+}
+
+/// Fayda ID check of someone who works for the shop (delivery person or admin) — owner only.
+/// Only cards whose NIDP signature verifies are stored. Kept as history (newest = current).
+model IdentityCheck {
+  id            String   @id @default(cuid())
+  /// driver | staff
+  subjectType   String
+  subjectId     String
+  fullName      String
+  gender        String?
+  /// yyyy-mm-dd
+  dateOfBirth   String?
+  /// Fayda number (FAN) — shown to the owner only
+  fan           String
+  cardVersion   String
+  keyFingerprint String
+  /// face photo from the card (WebP); stored in the database, never in public storage
+  face          Bytes?
+  checkedById   String?
+  createdAt     DateTime @default(now())
+
+  @@index([subjectType, subjectId])
+  @@index([fan])
 }

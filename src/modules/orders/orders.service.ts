@@ -36,6 +36,7 @@ export function serializeOrder(o: OrderWithRelations, opts: { staff?: boolean } 
     source: o.source,
     customerName: o.customerName,
     customerPhone: o.customerPhone,
+    customerPhoneVerified: o.customerPhoneVerified,
     delivery: {
       optionId: o.deliveryOptionId,
       label: o.deliveryLabel,
@@ -221,6 +222,8 @@ export async function createOrder(user: User | null, input: CreateOrderInput, ac
         source: input.source,
         customerName: input.customerName,
         customerPhone: input.customerPhone,
+        // Verified = the same number Telegram confirmed for this customer (Share my contact)
+        customerPhoneVerified: Boolean(user?.phoneVerifiedAt && user.phone && user.phone === input.customerPhone),
         telegramChatId: user?.telegramId ?? null,
         deliveryOptionId: delivery.id,
         deliveryLabel: delivery.nameEn,

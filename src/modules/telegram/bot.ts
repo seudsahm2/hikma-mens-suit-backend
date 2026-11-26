@@ -52,6 +52,11 @@ if (bot) {
 
     // Website sign-in: /start login_<token>. ctx.from is Telegram's own verified sender info.
     const payload = String(ctx.match ?? '');
+    // Verify phone: t.me/<bot>?start=phone → one-tap "Share my phone"
+    if (payload === 'phone') {
+      const { askForPhone } = await import('./contactShare');
+      return askForPhone(ctx, am);
+    }
     // Admin invite: t.me/<bot>?start=si_CODE (accept → owner approves)
     if (payload.startsWith('si_')) {
       const { openInvite } = await import('../admin/staffInvites');

@@ -28,6 +28,8 @@ const schema = z.object({
   BACKUP_KEY: optional,
   /** Where backups go (Telegram chat id). Default: the owner's connected Telegram. */
   BACKUP_CHAT_ID: optional,
+  /** Development only: also accept Fayda test cards signed with this key (ignored in production). */
+  FAYDA_TEST_PUBLIC_KEY: optional,
   SHEGERPAY_BASE_URL: z.string().url().default('https://api.shegerpay.com/api/v1'),
 });
 

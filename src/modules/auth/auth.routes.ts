@@ -39,6 +39,8 @@ export function publicUser(u: User) {
     role: u.role,
     fullName: u.fullName,
     phone: u.phone,
+    /** the phone came from Telegram's Share-my-contact (it belongs to this Telegram account) */
+    phoneVerified: Boolean(u.phone && u.phoneVerifiedAt),
     telegramId: u.telegramId?.toString() ?? null,
     telegramUsername: u.telegramUsername,
     photoUrl: u.photoUrl,
