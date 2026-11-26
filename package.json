@@ -20,7 +20,9 @@
     "db:studio": "prisma studio",
     "owner:create": "tsx src/scripts/createOwner.ts",
     "import:telegram": "tsx src/scripts/importTelegram.ts",
-    "bot:setup": "tsx src/scripts/setupBot.ts"
+    "bot:setup": "tsx src/scripts/setupBot.ts",
+    "backup:file": "tsx src/scripts/backupToFile.ts",
+    "backup:restore": "tsx src/scripts/restoreBackup.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

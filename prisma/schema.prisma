@@ -810,3 +810,44 @@ model DeliveryOffer {
   @@index([status, expiresAt])
   @@index([orderId])
 }
+
+/// One backup job (database snapshot or a batch of files) — shown on the owner's Backups page.
+model BackupRun {
+  id         String    @id @default(cuid())
+  /// db | files | cleanup
+  kind       String
+  /// running | ok | failed
+  status     String    @default("running")
+  /// daily | manual
+  trigger    String    @default("manual")
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  rows       Int       @default(0)
+  files      Int       @default(0)
+  bytes      Int       @default(0)
+  parts      Int       @default(0)
+  /// migration the snapshot belongs to (a restore needs the same schema)
+  migration  String?
+  sha256     String?
+  /// "chatId:messageId" of each uploaded part
+  messages   String[]  @default([])
+  note       String?
+
+  @@index([kind, startedAt])
+}
+
+/// Every stored file copied to Telegram (encrypted): restoring puts it back at the same path.
+model BackupFile {
+  /// image key ("products/<uuid>", all sizes rebuilt from it) or a raw object path ("site/<uuid>.mp4")
+  path       String    @id
+  /// image | raw
+  kind       String
+  size       Int
+  sha256     String
+  chatId     String
+  messageId  Int
+  fileId     String
+  backedUpAt DateTime  @default(now())
+  /// set when cleanup removed it from storage (it lives on in Telegram)
+  removedAt  DateTime?
+}

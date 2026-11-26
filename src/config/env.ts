@@ -24,6 +24,10 @@ const schema = z.object({
   /** Development only: enables POST /api/auth/dev (sign in as a test customer without Telegram). Ignored in production. */
   DEV_LOGIN: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   SHEGERPAY_API_KEY: optional,
+  /** Passphrase that encrypts backups (≥16 chars). Keep a copy outside the server — without it a backup can't be opened. */
+  BACKUP_KEY: optional,
+  /** Where backups go (Telegram chat id). Default: the owner's connected Telegram. */
+  BACKUP_CHAT_ID: optional,
   SHEGERPAY_BASE_URL: z.string().url().default('https://api.shegerpay.com/api/v1'),
 });
 

@@ -11,6 +11,7 @@ import { startDailyReportWorker } from './modules/reports/dailyReport';
 import { startBagReminderWorker } from './modules/cart/bagReminder';
 import { startReviewRequestWorker } from './modules/reviews/reviews.service';
 import { startDispatchWorker } from './modules/delivery/dispatch';
+import { startBackupWorker } from './modules/backup/backup.service';
 
 const app = createApp();
 
@@ -34,6 +35,8 @@ const stopBagReminders = startBagReminderWorker();
 const stopReviewRequests = startReviewRequestWorker();
 // Driver job offers that weren't answered in time go to the next driver
 const stopDispatch = startDispatchWorker();
+// Daily encrypted database backup + new files → owner's Telegram
+const stopBackups = startBackupWorker();
 
 // Catch a token from another bot early: sign-in links and the Mini App would silently fail
 if (bot) {
@@ -80,6 +83,7 @@ async function shutdown(signal: string) {
   stopBagReminders();
   stopReviewRequests();
   stopDispatch();
+  stopBackups();
   if (bot && env.TELEGRAM_POLLING) await bot.stop().catch(() => undefined);
   server.close(() => {
     void prisma.$disconnect().finally(() => process.exit(0));

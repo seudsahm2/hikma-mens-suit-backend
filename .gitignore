@@ -6,3 +6,7 @@ dist/
 uploads/
 *.log
 .DS_Store
+
+# backups are private customer data — never commit
+backups/
+*.hkb
