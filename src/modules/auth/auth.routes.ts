@@ -175,6 +175,32 @@ authRouter.post(
   }),
 );
 
+// Staff sign-in with Telegram (no password): same one-time bot link as customers, but only a
+// Telegram account linked to an active admin/owner gets a staff session.
+authRouter.post(
+  '/staff/telegram',
+  staffLoginLimiter,
+  ah(async (_req, res) => {
+    requireBotToken();
+    const { token, expiresAt } = await createLoginToken();
+    res.json({ token, url: `https://t.me/${env.TELEGRAM_BOT_USERNAME}?start=login_${token}`, expiresAt: expiresAt.toISOString() });
+  }),
+);
+
+authRouter.get(
+  '/staff/telegram/:token',
+  pollLimiter,
+  ah(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const state = await checkLoginToken(String(req.params.token));
+    if (state.status === 'pending') return res.json({ status: 'pending' });
+    if (state.status === 'expired') return res.status(410).json({ status: 'expired' });
+    const staff = await prisma.user.findFirst({ where: { staffTelegramId: BigInt(state.identity.id), role: { in: ['ADMIN', 'OWNER'] }, isActive: true } });
+    if (!staff) return res.status(403).json({ status: 'not_staff', error: { message: 'This Telegram account isn’t an admin of the shop', code: 'NOT_STAFF' } });
+    res.json({ status: 'confirmed', token: signToken({ sub: staff.id, role: staff.role }), user: publicUser(staff) });
+  }),
+);
+
 // Forgot password (staff): a 6-digit code goes to the Telegram connected in Settings → Telegram → You.
 // The answer never says whether the phone exists or has Telegram (no account probing).
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');

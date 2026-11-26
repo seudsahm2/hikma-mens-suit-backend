@@ -30,6 +30,7 @@ import { adminSupportRouter, supportRouter } from './modules/after/support';
 import { activityRouter, recordActivity } from './modules/admin/activity';
 import { driversRouter } from './modules/delivery/drivers';
 import { backupRouter } from './modules/backup/backup.routes';
+import { staffInvitesRouter } from './modules/admin/staffInvites';
 import './modules/delivery/driverProfile'; // registers the ⭐ rating buttons
 import { insightsRouter } from './modules/admin/insights';
 
@@ -99,6 +100,7 @@ export function createApp() {
   app.use('/api/admin/insights', requireStaff, insightsRouter);
   app.use('/api/admin', driversRouter);
   app.use('/api/admin', backupRouter); // owner only
+  app.use('/api/admin', staffInvitesRouter); // owner only: admin invites through Telegram
   app.use('/api/admin/exchanges', adminExchangesRouter);
   app.use('/api/support', supportRouter);
   app.use('/api/admin/support', adminSupportRouter);

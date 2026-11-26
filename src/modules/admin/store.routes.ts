@@ -271,23 +271,7 @@ adminStoreRouter.get(
   }),
 );
 
-adminStoreRouter.post(
-  '/staff',
-  requireOwner,
-  validate(z.object({ fullName: z.string().trim().min(2).max(80), phone: z.string(), password: z.string().min(8).max(200) })),
-  ah(async (req, res) => {
-    const phone = normalizeEthiopianPhone(req.body.phone);
-    if (!phone) throw badRequest('Enter a valid Ethiopian phone number', 'PHONE');
-    const existing = await prisma.user.findUnique({ where: { phone } });
-    if (existing && existing.role !== 'CUSTOMER') throw conflict('This phone already has a staff account', 'DUPLICATE');
-    const passwordHash = await bcrypt.hash(req.body.password, 12);
-    // A customer with the same phone gets a separate staff account would collide on phone; promote instead.
-    const user = existing
-      ? await prisma.user.update({ where: { id: existing.id }, data: { role: 'ADMIN', passwordHash, isActive: true, fullName: req.body.fullName } })
-      : await prisma.user.create({ data: { role: 'ADMIN', fullName: req.body.fullName, phone, passwordHash } });
-    res.status(201).json({ staff: { ...publicUser(user), isActive: user.isActive } });
-  }),
-);
+// New admins join through Telegram invites (staffInvites.ts) — no passwords to hand out.
 
 adminStoreRouter.patch(
   '/staff/:id',
@@ -316,6 +300,7 @@ adminStoreRouter.delete(
     if (!target || target.role !== 'ADMIN') throw notFound('Admin not found');
     // Keep history (order events reference the user): demote and lock instead of deleting.
     await prisma.user.update({ where: { id: target.id }, data: { role: 'CUSTOMER', passwordHash: null, staffTelegramId: null, staffLinkCode: null, isActive: target.telegramId !== null } });
+    void import('./staffInvites').then((m) => m.tellRevoked(target.staffTelegramId)).catch(() => undefined);
     res.json({ ok: true });
   }),
 );

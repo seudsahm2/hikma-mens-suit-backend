@@ -851,3 +851,25 @@ model BackupFile {
   /// set when cleanup removed it from storage (it lives on in Telegram)
   removedAt  DateTime?
 }
+
+/// Owner invites someone to be an admin through Telegram: they accept in the bot, then the owner approves.
+model StaffInvite {
+  id               String    @id @default(cuid())
+  /// secret part of the invite link (t.me/<bot>?start=si_<code>)
+  code             String    @unique
+  /// what the owner typed: phone or @username
+  contact          String
+  createdById      String
+  /// sent | accepted | declined | approved | cancelled
+  status           String    @default("sent")
+  /// the Telegram account that accepted (or that the invite was sent to directly)
+  telegramId       BigInt?
+  name             String?
+  username         String?
+  staffUserId      String?
+  createdAt        DateTime  @default(now())
+  respondedAt      DateTime?
+  expiresAt        DateTime
+
+  @@index([status])
+}

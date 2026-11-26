@@ -52,6 +52,11 @@ if (bot) {
 
     // Website sign-in: /start login_<token>. ctx.from is Telegram's own verified sender info.
     const payload = String(ctx.match ?? '');
+    // Admin invite: t.me/<bot>?start=si_CODE (accept → owner approves)
+    if (payload.startsWith('si_')) {
+      const { openInvite } = await import('../admin/staffInvites');
+      return openInvite(ctx, payload.slice(3));
+    }
     // Staff connect link from the admin: t.me/<bot>?start=stf_CODE
     if (payload.startsWith('stf_') && ctx.from) {
       const u = await prisma.user.findUnique({ where: { staffLinkCode: payload.slice(4) } });
