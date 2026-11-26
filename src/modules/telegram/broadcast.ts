@@ -34,6 +34,24 @@ export async function startBroadcast(productId: string, actorId: string | null, 
   return prisma.broadcast.create({ data: { productId, createdById: actorId, total } });
 }
 
+/**
+ * Owner-picked customers (e.g. top customers) get one product with an optional personal line.
+ * Not limited to news subscribers — it's a personal message the owner chose to send to people who
+ * bought from the shop; anyone who blocked the bot is skipped.
+ */
+export async function startTargetedBroadcast(productId: string, actorId: string | null, userIds: string[], note?: string) {
+  if (!bot) throw new HttpError(503, 'Telegram bot is not configured', 'TELEGRAM_DISABLED');
+  const product = await prisma.product.findUnique({ where: { id: productId }, include: { images: true } });
+  if (!product) throw notFound('Product not found');
+  if (product.status !== 'ACTIVE') throw conflict('Put the product on sale before announcing it', 'NOT_ACTIVE');
+  if (!product.images.length) throw conflict('Add a photo before announcing it', 'NO_IMAGES');
+  const users = await prisma.user.findMany({ where: { id: { in: [...new Set(userIds)] }, isActive: true, telegramId: { not: null } }, select: { id: true } });
+  if (!users.length) throw conflict('None of the chosen customers can get Telegram messages', 'NO_RECIPIENTS');
+  return prisma.broadcast.create({
+    data: { productId, createdById: actorId, total: users.length, recipientIds: users.map((u) => u.id), note: note?.trim().slice(0, 300) || null },
+  });
+}
+
 /** Sends the next batch of the oldest running broadcast. Returns messages sent. */
 export async function processBroadcasts(): Promise<number> {
   if (!bot) return 0;
@@ -51,7 +69,9 @@ export async function processBroadcasts(): Promise<number> {
   }
 
   const users = await prisma.user.findMany({
-    where: { ...subscriberWhere, ...(b.cursor ? { id: { gt: b.cursor } } : {}) },
+    where: b.recipientIds.length
+      ? { isActive: true, telegramId: { not: null }, id: { in: b.recipientIds, ...(b.cursor ? { gt: b.cursor } : {}) } }
+      : { ...subscriberWhere, ...(b.cursor ? { id: { gt: b.cursor } } : {}) },
     orderBy: { id: 'asc' },
     take: BATCH,
     select: { id: true, telegramId: true, languageCode: true },
@@ -67,15 +87,21 @@ export async function processBroadcasts(): Promise<number> {
   const name = escapeHtml([p.brand?.name, p.nameEn].filter(Boolean).join(' · '));
   const nameAm = escapeHtml([p.brand?.name, p.nameAm || p.nameEn].filter(Boolean).join(' · '));
 
+  const targeted = b.recipientIds.length > 0;
+  const note = b.note ? `\n\n💬 ${escapeHtml(b.note)}` : '';
   let sent = 0;
   let failed = 0;
   for (const u of users) {
     const am = u.languageCode === 'am';
     try {
       await bot.api.sendPhoto(u.telegramId!.toString(), telegramPhoto(image.key, 'md'), {
-        caption: am
-          ? `🆕 <b>አዲስ ገብቷል</b>\n${nameAm}\n${price}\n\n<i>ለማቆም /stop</i>`
-          : `🆕 <b>New in</b>\n${name}\n${price}\n\n<i>Turn off: /stop</i>`,
+        caption: targeted
+          ? am
+            ? `✨ <b>ለእርስዎ የተመረጠ</b>\n${nameAm}\n${price}${note}`
+            : `✨ <b>Picked for you</b>\n${name}\n${price}${note}`
+          : am
+            ? `🆕 <b>አዲስ ገብቷል</b>\n${nameAm}\n${price}\n\n<i>ለማቆም /stop</i>`
+            : `🆕 <b>New in</b>\n${name}\n${price}\n\n<i>Turn off: /stop</i>`,
         parse_mode: 'HTML',
         reply_markup: new InlineKeyboard().webApp(am ? '🛍  ይመልከቱ' : '🛍  View', shopUrl(`/p/${p.slug}`)),
       });
@@ -84,7 +110,7 @@ export async function processBroadcasts(): Promise<number> {
       failed++;
       const message = err instanceof Error ? err.message : String(err);
       // Blocked the bot / deleted account: stop sending to them
-      if (/blocked|deactivated|chat not found|403/i.test(message)) {
+      if (!targeted && /blocked|deactivated|chat not found|403/i.test(message)) {
         await prisma.user.update({ where: { id: u.id }, data: { newsOptIn: false } }).catch(() => undefined);
       } else {
         logger.warn({ err: message, userId: u.id }, 'broadcast message failed');

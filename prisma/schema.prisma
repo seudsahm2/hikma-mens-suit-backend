@@ -93,6 +93,10 @@ model Broadcast {
   total       Int       @default(0)
   sentCount   Int       @default(0)
   failedCount Int       @default(0)
+  /// targeted announcement: only these customers (empty = everyone subscribed to new arrivals)
+  recipientIds String[] @default([])
+  /// optional personal line from the owner
+  note        String?
   createdAt   DateTime  @default(now())
   finishedAt  DateTime?
 

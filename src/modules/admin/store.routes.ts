@@ -183,6 +183,83 @@ adminStoreRouter.get(
   }),
 );
 
+/**
+ * Customer insights for a period: top customers (by money and by orders), new vs returning,
+ * average order, and regulars who went quiet (worth a personal message).
+ */
+adminStoreRouter.get(
+  '/customers/insights',
+  validate(z.object({ period: z.enum(['week', 'month', 'all']).default('month') }), 'query'),
+  ah(async (req, res) => {
+    const { period } = req.query as unknown as { period: 'week' | 'month' | 'all' };
+    const now = new Date();
+    const since = period === 'week' ? new Date(now.getTime() - 7 * 86_400_000) : period === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1) : new Date(0);
+    const valid = { status: { not: 'CANCELLED' as const }, userId: { not: null } };
+
+    const [inPeriod, allTime, newCustomers, subscribers] = await Promise.all([
+      prisma.order.groupBy({ by: ['userId'], where: { ...valid, createdAt: { gte: since } }, _count: true, _sum: { total: true }, _max: { createdAt: true } }),
+      prisma.order.groupBy({ by: ['userId'], where: valid, _count: true, _sum: { total: true }, _min: { createdAt: true }, _max: { createdAt: true } }),
+      prisma.user.count({ where: { role: 'CUSTOMER', createdAt: { gte: since } } }),
+      prisma.user.count({ where: { role: 'CUSTOMER', newsOptIn: true, isActive: true, telegramId: { not: null } } }),
+    ]);
+    const first = new Map(allTime.map((a) => [a.userId!, a]));
+    // Returning = bought before this period (all-time view: bought more than once)
+    const returning = inPeriod.filter((p) => (period === 'all' ? p._count > 1 : (first.get(p.userId!)?._min.createdAt ?? now) < since)).length;
+    const orders = inPeriod.reduce((n, p) => n + p._count, 0);
+    const revenue = inPeriod.reduce((n, p) => n + (p._sum.total ?? 0), 0);
+
+    const bySpend = [...inPeriod].sort((a, b) => (b._sum.total ?? 0) - (a._sum.total ?? 0)).slice(0, 10);
+    const byOrders = [...inPeriod].sort((a, b) => b._count - a._count || (b._sum.total ?? 0) - (a._sum.total ?? 0)).slice(0, 10);
+    const quietSince = new Date(now.getTime() - 45 * 86_400_000);
+    const winBack = allTime
+      .filter((a) => a._count >= 2 && a._max.createdAt! < quietSince)
+      .sort((a, b) => (b._sum.total ?? 0) - (a._sum.total ?? 0))
+      .slice(0, 8);
+
+    const ids = [...new Set([...bySpend, ...byOrders, ...winBack].map((x) => x.userId!))];
+    const users = new Map((await prisma.user.findMany({ where: { id: { in: ids } } })).map((u) => [u.id, u]));
+    const row = (x: { userId: string | null; _count: number; _sum: { total: number | null }; _max: { createdAt: Date | null } }) => {
+      const u = users.get(x.userId!);
+      const all = first.get(x.userId!);
+      return u
+        ? {
+            ...publicUser(u),
+            telegramId: u.telegramId?.toString() ?? null,
+            orders: x._count,
+            spent: x._sum.total ?? 0,
+            lastOrderAt: x._max.createdAt,
+            ordersAllTime: all?._count ?? x._count,
+          }
+        : null;
+    };
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      period,
+      buyers: inPeriod.length,
+      orders,
+      revenue,
+      avgOrder: orders ? Math.round(revenue / orders) : 0,
+      newCustomers,
+      returningPct: inPeriod.length ? Math.round((returning / inPeriod.length) * 100) : 0,
+      subscribers,
+      topBySpend: bySpend.map(row).filter(Boolean),
+      topByOrders: byOrders.map(row).filter(Boolean),
+      winBack: winBack.map(row).filter(Boolean),
+    });
+  }),
+);
+
+/** Announce one product to customers the owner picked (top customers, a few regulars…). */
+adminStoreRouter.post(
+  '/customers/announce',
+  validate(z.object({ productId: z.string().min(1).max(40), userIds: z.array(z.string().min(1).max(40)).min(1).max(500), note: z.string().max(300).optional() })),
+  ah(async (req, res) => {
+    const { startTargetedBroadcast } = await import('../telegram/broadcast');
+    const b = await startTargetedBroadcast(req.body.productId, req.user!.id, req.body.userIds, req.body.note);
+    res.status(201).json({ broadcast: { id: b.id, total: b.total } });
+  }),
+);
+
 // ─── Staff (owner only) ──────────────────────────────────
 
 adminStoreRouter.get(
