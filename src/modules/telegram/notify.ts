@@ -50,7 +50,12 @@ function adminCardText(o: FullOrder, footer?: string) {
     o.giftNote ? `🎁 <b>Add gift:</b> ${escapeHtml(o.giftNote)}` : '',
     `<b>Total:</b> ${birr(o.total)}${o.deliveryFee === null ? ' + delivery (by phone)' : ''}`,
     `<b>Due now:</b> ${birr(o.amountDue)}${o.isDeposit ? ' (deposit)' : ''}`,
-    `<b>Payment:</b> ${escapeHtml(o.paymentLabel ?? '-')} — ${PAYMENT_LABEL[o.paymentStatus]}`,
+    // A cancelled order is never "checking payment": it owes a refund, was refunded, or had no money
+    o.status === 'CANCELLED'
+      ? o.amountPaid > 0 || o.paymentStatus === 'SUBMITTED'
+        ? `<b>Payment:</b> ${escapeHtml(o.paymentLabel ?? '-')} — ${o.refundedAt ? '✓ Refunded' : `💸 <b>Refund due</b> (${birr(o.amountPaid > 0 ? o.amountPaid : o.amountDue)})`}`
+        : `<b>Payment:</b> none taken`
+      : `<b>Payment:</b> ${escapeHtml(o.paymentLabel ?? '-')} — ${PAYMENT_LABEL[o.paymentStatus]}`,
     o.transactionRef ? `<b>Ref:</b> <code>${escapeHtml(o.transactionRef)}</code>` : '',
     driverLine(o),
     o.cancelAt
@@ -213,6 +218,12 @@ function customerMessage(o: FullOrder, kind: OrderEventKind): string | null {
       };
       const pair = map[o.status];
       if (!pair) return null;
+      // Cancelled after money came in: say the money comes back (the shop sees "Refund due")
+      if (o.status === 'CANCELLED' && (o.amountPaid > 0 || o.paymentStatus === 'SUBMITTED')) {
+        return am
+          ? `${pair[1]}\n\n💸 የከፈሉት ገንዘብ ይመለስልዎታል — በቅርቡ እናገኝዎታለን።`
+          : `${pair[0]}\n\n💸 What you paid will be refunded — we'll contact you shortly.`;
+      }
       // On the way: the delivery code the customer gives the driver (only the customer gets it)
       if (o.status === 'OUT_FOR_DELIVERY' && o.deliveryCode) {
         return am

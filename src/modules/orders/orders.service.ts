@@ -28,6 +28,10 @@ export function serializeOrder(o: OrderWithRelations, opts: { staff?: boolean } 
     canRateDriver: Boolean(o.driverId && o.status === 'DELIVERED' && !o.driverRating),
     // staff only: a cancel counting down (undo window)
     ...(opts.staff ? { cancelAt: o.cancelAt } : {}),
+    // staff only: cancelled after money came in → refund due / refunded
+    ...(opts.staff && o.status === 'CANCELLED' && (o.amountPaid > 0 || o.paymentStatus === 'SUBMITTED')
+      ? { refund: { due: !o.refundedAt, amount: o.amountPaid > 0 ? o.amountPaid : o.amountDue, confirmed: o.amountPaid > 0, refundedAt: o.refundedAt, note: o.refundNote } }
+      : {}),
     paymentStatus: o.paymentStatus,
     source: o.source,
     customerName: o.customerName,
@@ -534,6 +538,20 @@ export async function changeStatus(orderId: string, status: OrderStatus, actorId
   if (status === 'CANCELLED') {
     // A driver who accepted / was offered the job hears it right away (no wasted trip)
     safely(() => import('../delivery/dispatch').then((d) => d.cancelDispatch(orderId)), 'driver told about cancel');
+    // Money already came in → the shop owes a refund; say so where they'll see it
+    if (order.amountPaid > 0 || order.paymentStatus === 'SUBMITTED') {
+      safely(async () => {
+        const { bot } = await import('../telegram/bot');
+        const s = await prisma.settings.findUnique({ where: { id: 'default' } });
+        const amount = order.amountPaid > 0 ? order.amountPaid : order.amountDue;
+        if (bot && s?.adminChatId)
+          await bot.api.sendMessage(
+            s.adminChatId,
+            `💸 Refund due: <b>${order.orderNumber}</b> was cancelled after ${order.amountPaid > 0 ? 'payment' : 'the customer sent payment proof'} — ${amount.toLocaleString('en-US')} ETB. Give it back, then tap “Mark refunded” on the order.`,
+            { parse_mode: 'HTML' },
+          );
+      }, 'refund notice');
+    }
     onStockRestored(order.items.map((i) => i.variantId));
     safely(() => onOrderCancelled(orderId), 'credit refund');
   }

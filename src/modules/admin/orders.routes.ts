@@ -12,9 +12,14 @@ export const adminOrdersRouter = Router();
 const STATUSES = ['PENDING', 'CONFIRMED', 'PACKING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'PICKED_UP', 'CANCELLED'] as const;
 const PAYMENT = ['UNPAID', 'SUBMITTED', 'PARTIAL', 'PAID', 'REJECTED'] as const;
 
+/** Cancelled after money came in (paid / part-paid / proof sent): the shop owes a refund. */
+const refundWhere: Prisma.OrderWhereInput = { status: 'CANCELLED', OR: [{ amountPaid: { gt: 0 } }, { paymentStatus: 'SUBMITTED' }] };
+
 const listQuery = z.object({
   status: z.enum([...STATUSES, 'OPEN']).optional(),
   payment: z.enum(PAYMENT).optional(),
+  /** due = cancelled after money came in and not given back yet */
+  refund: z.enum(['due', 'done']).optional(),
   q: z.string().trim().max(80).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(30),
@@ -31,7 +36,9 @@ adminOrdersRouter.get(
         : q.status
           ? { status: q.status }
           : {}),
-      ...(q.payment ? { paymentStatus: q.payment } : {}),
+      // A payment filter is a to-do list for live orders: cancelled ones never show there (they have "Refunds")
+      ...(q.payment ? { paymentStatus: q.payment, ...(q.status ? {} : { status: { not: 'CANCELLED' as const } }) } : {}),
+      ...(q.refund ? { AND: [refundWhere, { refundedAt: q.refund === 'due' ? null : { not: null } }] } : {}),
       ...(q.q
         ? {
             OR: [
@@ -54,13 +61,29 @@ adminOrdersRouter.get(
       }),
       prisma.order.groupBy({ by: ['paymentStatus'], where: { status: { not: 'CANCELLED' } }, _count: true }),
     ]);
+    const refundsDue = await prisma.order.count({ where: { AND: [refundWhere, { refundedAt: null }] } });
     res.json({
       orders: orders.map((o) => serializeOrder(o, { staff: true })),
       total,
       page: q.page,
       hasMore: q.page * q.limit < total,
       needsReview: counts.find((c) => c.paymentStatus === 'SUBMITTED')?._count ?? 0,
+      refundsDue,
     });
+  }),
+);
+
+/** The shop gave the money back for a cancelled order (how: cash, telebirr ref…). */
+adminOrdersRouter.post(
+  '/:id/refunded',
+  validate(z.object({ note: z.string().trim().min(2).max(200) })),
+  ah(async (req, res) => {
+    const res1 = await prisma.order.updateMany({ where: { id: req.params.id, refundedAt: null, ...refundWhere }, data: { refundedAt: new Date(), refundNote: req.body.note } });
+    if (!res1.count) throw badRequest('Nothing to refund on this order (or it was already marked refunded)');
+    await prisma.orderEvent.create({ data: { orderId: req.params.id!, type: 'internal_refunded', message: `Refunded — ${req.body.note}`, actorId: req.user!.id } });
+    void import('../telegram/notify').then((n) => n.refreshAdminCards(req.params.id!)).catch(() => undefined);
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: req.params.id }, include: orderInclude });
+    res.json({ order: serializeOrder(order, { staff: true }) });
   }),
 );
 

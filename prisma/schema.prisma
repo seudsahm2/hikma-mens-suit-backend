@@ -343,6 +343,9 @@ model Order {
   driverRating      Int?
   driverRatingNote  String?
   driverRatedAt     DateTime?
+  /// cancelled after money came in: when the shop gave it back (and how)
+  refundedAt        DateTime?
+  refundNote        String?
   orderNumber       String            @unique
   userId            String?
   source            OrderSource       @default(WEB)
