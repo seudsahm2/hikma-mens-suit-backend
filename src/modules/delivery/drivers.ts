@@ -17,7 +17,8 @@ import { ah, badRequest, conflict, notFound } from '../../lib/http';
 import { requireStaff } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { normalizeEthiopianPhone } from '../../lib/phone';
-import { bot } from '../telegram/bot';
+import { saveImage } from '../../lib/storage';
+import { bot, shopUrl, telegramDownload } from '../telegram/bot';
 import { birr, escapeHtml } from '../telegram/media';
 import { logActivity } from '../admin/activity';
 import { cancelDispatch, dispatch, dispatchState, driverBoard, handover } from './dispatch';
@@ -46,7 +47,8 @@ export async function sendDriverCard(orderId: string) {
   const toCollect = Math.max(0, o.total - o.amountPaid);
   const map = mapLink(o);
   const text = [
-    `🚚 <b>Delivery · ${escapeHtml(o.orderNumber)}</b>`,
+    `🚚 <b>${o.exchangeId ? 'Exchange delivery' : 'Delivery'} · ${escapeHtml(o.orderNumber)}</b>`,
+    o.exchangeId ? '🔁 <b>Collect the old item from the customer too.</b>' : '',
     '',
     `👤 ${escapeHtml(o.customerName)} · <a href="tel:${o.customerPhone}">${o.customerPhone}</a>`,
     `📍 ${escapeHtml([o.area, o.landmark, o.city].filter(Boolean).join(', ') || o.deliveryLabel)}`,
@@ -75,8 +77,21 @@ async function markDelivered(orderId: string, note: string) {
   await changeStatus(orderId, 'DELIVERED', null, note, { trusted: true }); // driver typed the code / customer confirmed
   await refreshAdminCards(orderId).catch(() => undefined);
   // The shop hears about every confirmed delivery (note says who and how much was collected)
-  const o = await prisma.order.findUnique({ where: { id: orderId }, select: { orderNumber: true } });
+  const o = await prisma.order.findUnique({ where: { id: orderId }, select: { orderNumber: true, exchangeId: true, driver: true } });
   if (o) await alertStaff(`✅ <b>${escapeHtml(o.orderNumber)}</b> delivered — ${escapeHtml(note)}.`);
+  if (o?.exchangeId && o.driver) {
+    await driverSend(
+      o.driver,
+      `🔁 <b>${escapeHtml(o.orderNumber)}</b> — how is the old item the customer returned?`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard()
+          .text('📦 Returned · Good condition', `exr:${o.exchangeId}:good`)
+          .row()
+          .text('⚠️ Returned · Damaged (send photo)', `exr:${o.exchangeId}:damaged`),
+      },
+    );
+  }
   void import('./driverProfile').then((m) => m.askDeliveryRating(orderId)).catch(() => undefined);
 }
 
@@ -117,6 +132,7 @@ driversRouter.get(
         linked: Boolean(d.telegramId),
         linkCode: d.telegramId ? null : d.linkCode,
         isOnline: d.isOnline,
+        canPriceDamage: d.canPriceDamage,
         busy,
         busyWith,
         rating,
@@ -143,11 +159,15 @@ driversRouter.post(
 
 driversRouter.patch(
   '/drivers/:id',
-  validate(z.object({ isActive: z.boolean().optional(), newCode: z.boolean().optional() })),
+  validate(z.object({ isActive: z.boolean().optional(), newCode: z.boolean().optional(), canPriceDamage: z.boolean().optional() })),
   ah(async (req, res) => {
     const d = await prisma.driver.update({
       where: { id: req.params.id },
-      data: { ...(req.body.isActive !== undefined ? { isActive: req.body.isActive } : {}), ...(req.body.newCode ? { linkCode: linkCode(), telegramId: null } : {}) },
+      data: {
+        ...(req.body.isActive !== undefined ? { isActive: req.body.isActive } : {}),
+        ...(req.body.canPriceDamage !== undefined ? { canPriceDamage: req.body.canPriceDamage } : {}),
+        ...(req.body.newCode ? { linkCode: linkCode(), telegramId: null } : {}),
+      },
     });
     res.json({ driver: { id: d.id, linkCode: d.telegramId ? null : d.linkCode } });
   }),
@@ -337,5 +357,83 @@ if (bot) {
     await ctx.answerCallbackQuery({ text: '✅ Thank you!' });
     await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
     if (order.driverId) await prisma.driver.updateMany({ where: { id: order.driverId, awaitingOrderId: order.id }, data: { awaitingOrderId: null } });
+  });
+
+  // Exchange return condition: driver confirms good vs damaged (asks for a photo)
+  bot.callbackQuery(/^exr:([a-z0-9]+):(good|damaged)$/, async (ctx) => {
+    const [, exchangeId, state] = ctx.match;
+    const driver = ctx.from ? await prisma.driver.findUnique({ where: { telegramId: BigInt(ctx.from.id) } }) : null;
+    const ex = await prisma.exchangeRequest.findUnique({ where: { id: exchangeId }, include: { order: true } });
+    if (!driver || !ex) return void (await ctx.answerCallbackQuery({ text: 'Not found' }));
+    if (state === 'good') {
+      await prisma.exchangeRequest.update({ where: { id: ex.id }, data: { returnStatus: 'returned_good' } });
+      await prisma.orderEvent.create({ data: { orderId: ex.orderId, type: 'exchange_return_good', message: `Old item collected in good condition by ${driver.name}` } });
+      await ctx.answerCallbackQuery({ text: '✅ Recorded' });
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
+      await driverSend(driver, `✅ Recorded — bring the returned item for <b>${escapeHtml(ex.order.orderNumber)}</b> back to the shop.`, { parse_mode: 'HTML' });
+      const s = await prisma.settings.findUnique({ where: { id: 'default' } });
+      if (s?.adminChatId) {
+        await bot?.api
+          .sendMessage(s.adminChatId, `📦 <b>Exchange return · ${escapeHtml(ex.order.orderNumber)}</b>\nCollected in good condition by ${escapeHtml(driver.name)}.`, {
+            parse_mode: 'HTML',
+            reply_markup: new InlineKeyboard().url('Restock in Care', shopUrl('/admin/care?tab=exchanges')),
+          })
+          .catch(() => undefined);
+      }
+      return;
+    }
+    await prisma.driver.update({ where: { id: driver.id }, data: { awaitingPhotoOrderId: ex.id } });
+    await ctx.answerCallbackQuery({ text: 'Send 1 photo of the damage' });
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
+    await driverSend(driver, `📸 Send 1 clear photo of the damage on the returned item for <b>${escapeHtml(ex.order.orderNumber)}</b>:`, {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, input_field_placeholder: 'Send damage photo' },
+    });
+  });
+
+  bot.on('message:photo', async (ctx, next) => {
+    if (ctx.chat.type !== 'private' || !ctx.from) return next();
+    const driver = await prisma.driver.findUnique({ where: { telegramId: BigInt(ctx.from.id) } });
+    if (!driver?.awaitingPhotoOrderId) return next();
+    const ex = await prisma.exchangeRequest.findUnique({ where: { id: driver.awaitingPhotoOrderId }, include: { order: true } });
+    await prisma.driver.update({ where: { id: driver.id }, data: { awaitingPhotoOrderId: null } });
+    if (!ex) return next();
+    const largest = ctx.message.photo[ctx.message.photo.length - 1];
+    if (!largest) return;
+    try {
+      const buf = await telegramDownload(largest.file_id);
+      const saved = await saveImage(buf, 'proofs');
+      const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
+      let fee = 0;
+      if (driver.canPriceDamage && settings && settings.damageFeeValue > 0) {
+        fee = settings.damageFeeType === 'percent' ? Math.round((ex.order.subtotal * settings.damageFeeValue) / 100) : settings.damageFeeValue;
+      }
+      await prisma.exchangeRequest.update({
+        where: { id: ex.id },
+        data: { returnStatus: 'returned_damaged', damagePhotoKey: saved.key, ...(fee > 0 ? { damageFee: fee } : {}) },
+      });
+      await prisma.orderEvent.create({
+        data: { orderId: ex.orderId, type: 'exchange_return_damaged', message: `Returned item marked damaged by ${driver.name}${fee > 0 ? ` (rate: ${birr(fee)})` : ''}` },
+      });
+      await driverSend(
+        driver,
+        fee > 0
+          ? `✅ Damage photo sent to the shop.\nSuggested damage fee: <b>${birr(fee)}</b> — collect cash or ask the customer to pay via Telebirr.`
+          : `✅ Damage photo sent to the owner for <b>${escapeHtml(ex.order.orderNumber)}</b>. The owner will set the fee.`,
+        { parse_mode: 'HTML', reply_markup: driverKeyboard() },
+      );
+      if (settings?.adminChatId) {
+        await bot?.api
+          .sendPhoto(settings.adminChatId, largest.file_id, {
+            caption: `⚠️ <b>Damaged exchange return · ${escapeHtml(ex.order.orderNumber)}</b>\nDriver: ${escapeHtml(driver.name)}${fee > 0 ? `\nSuggested fee: ${birr(fee)}` : ''}`,
+            parse_mode: 'HTML',
+            reply_markup: new InlineKeyboard().url('Set damage fee', shopUrl('/admin/care?tab=exchanges')),
+          })
+          .catch(() => undefined);
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, 'damage photo save failed');
+      await driverSend(driver, '⚠️ Could not save the photo — please try sending it again.');
+    }
   });
 }
