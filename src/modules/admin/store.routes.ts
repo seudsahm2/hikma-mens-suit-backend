@@ -376,6 +376,7 @@ const settingsSchema = z
     dailyReport: z.boolean(),
     reportHour: z.number().int().min(0).max(23),
     bagReminders: z.boolean(),
+    ownerCanOrder: z.boolean(),
     loyaltyEnabled: z.boolean(),
     loyaltyPercent: z.number().int().min(1).max(20),
     referralEnabled: z.boolean(),

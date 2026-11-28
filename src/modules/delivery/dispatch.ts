@@ -14,6 +14,7 @@ import type { Driver } from '@prisma/client';
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { conflict, notFound } from '../../lib/http';
+import { normalizeEthiopianPhone } from '../../lib/phone';
 import { bot } from '../telegram/bot';
 import { birr, escapeHtml } from '../telegram/media';
 import { logActivity } from '../admin/activity';
@@ -83,17 +84,40 @@ export async function driverBoard() {
   });
 }
 
-/** Linked drivers, best first: free + online, then fresh location, then nearest to the shop. */
-export async function rankedDrivers() {
-  const board = (await driverBoard()).filter((b) => b.driver.isActive && b.driver.telegramId);
-  const ready = (b: (typeof board)[number]) => (b.driver.isOnline && !b.busy ? 0 : 1);
-  return board.sort((a, b) => ready(a) - ready(b) || rank(a, b));
+/** True when this driver is the customer who placed the order (cannot deliver their own order). */
+export function isOrderCustomerDriver(
+  order: { telegramChatId: bigint | null; customerPhone: string; user?: { telegramId: bigint | null } | null },
+  driver: Pick<Driver, 'telegramId' | 'phone'>,
+): boolean {
+  if (driver.telegramId != null) {
+    if (order.telegramChatId != null && driver.telegramId === order.telegramChatId) return true;
+    if (order.user?.telegramId != null && driver.telegramId === order.user.telegramId) return true;
+  }
+  const dp = normalizeEthiopianPhone(driver.phone);
+  const op = normalizeEthiopianPhone(order.customerPhone);
+  return Boolean(dp && op && dp === op);
 }
 
-/** Best available driver for an order: online, linked, not busy, nearest to the shop (fresh location first). */
-async function pickDriver(exclude: Set<string>) {
+/** Linked drivers, best first: free + online, then fresh location, then nearest to the shop. */
+export async function rankedDrivers(orderId?: string) {
+  const [board, order] = await Promise.all([
+    driverBoard(),
+    orderId ? prisma.order.findUnique({ where: { id: orderId }, select: { telegramChatId: true, customerPhone: true, user: { select: { telegramId: true } } } }) : null,
+  ]);
+  const filtered = board.filter((b) => b.driver.isActive && b.driver.telegramId && (!order || !isOrderCustomerDriver(order, b.driver)));
+  const ready = (b: (typeof filtered)[number]) => (b.driver.isOnline && !b.busy ? 0 : 1);
+  return filtered.sort((a, b) => ready(a) - ready(b) || rank(a, b));
+}
+
+/** Best available driver for an order: online, linked, not busy, not the buyer, nearest to the shop (fresh location first). */
+async function pickDriver(
+  exclude: Set<string>,
+  order: { telegramChatId: bigint | null; customerPhone: string; user?: { telegramId: bigint | null } | null },
+) {
   const board = await driverBoard();
-  const candidates = board.filter((b) => b.driver.isActive && b.driver.telegramId && b.driver.isOnline && !b.busy && !exclude.has(b.driver.id));
+  const candidates = board.filter(
+    (b) => b.driver.isActive && b.driver.telegramId && b.driver.isOnline && !b.busy && !exclude.has(b.driver.id) && !isOrderCustomerDriver(order, b.driver),
+  );
   candidates.sort(rank);
   return candidates[0] ?? null;
 }
@@ -208,7 +232,7 @@ async function offerTo(orderId: string, driverId: string, auto: boolean) {
 
 /** Staff: find the nearest driver (driverId omitted) or offer to a chosen driver. */
 export async function dispatch(orderId: string, driverId: string | null, actor: { id: string | null; fullName: string }) {
-  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: { select: { telegramId: true } } } });
   if (!order) throw notFound('Order not found');
   assertDispatchable(order);
   const active = await prisma.deliveryOffer.findFirst({ where: { orderId, status: { in: ['offered', 'accepted'] } } });
@@ -218,10 +242,11 @@ export async function dispatch(orderId: string, driverId: string | null, actor: 
     const d = await prisma.driver.findUnique({ where: { id: driverId } });
     if (!d?.isActive) throw notFound('Driver not found');
     if (!d.telegramId) throw conflict(`${d.name} hasn’t connected Telegram yet`, 'NOT_LINKED');
+    if (isOrderCustomerDriver(order, d)) throw conflict('A driver can’t deliver their own order', 'SELF_DELIVERY');
     target = d.id;
   } else {
     const tried = await prisma.deliveryOffer.findMany({ where: { orderId, status: { in: ['declined', 'expired'] } }, select: { driverId: true } });
-    const best = await pickDriver(new Set(tried.map((t) => t.driverId)));
+    const best = await pickDriver(new Set(tried.map((t) => t.driverId)), order);
     if (!best) throw conflict('No driver is free right now — ask a driver to tap 🟢 Online in the bot, or pick one', 'NO_DRIVER');
     target = best.driver.id;
   }
@@ -308,14 +333,14 @@ export async function respond(offerId: string, telegramId: number, answer: 'no' 
 }
 
 async function next(orderId: string) {
-  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: { select: { telegramId: true } } } });
   if (!order || ['OUT_FOR_DELIVERY', 'DELIVERED', 'PICKED_UP', 'CANCELLED'].includes(order.status)) return;
   const tried = await prisma.deliveryOffer.findMany({ where: { orderId }, select: { driverId: true } });
   if (tried.length >= MAX_AUTO_TRIES) {
     await tellStaff(`⚠️ No driver took <b>${escapeHtml(order.orderNumber)}</b> after ${tried.length} tries — please pick one.`, pickAgain(orderId));
     return;
   }
-  const best = await pickDriver(new Set(tried.map((t) => t.driverId)));
+  const best = await pickDriver(new Set(tried.map((t) => t.driverId)), order);
   if (!best) {
     await tellStaff(`⚠️ No other driver is free for <b>${escapeHtml(order.orderNumber)}</b> — please pick one.`, pickAgain(orderId));
     return;

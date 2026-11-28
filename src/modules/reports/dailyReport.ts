@@ -90,10 +90,11 @@ export async function buildDailyReport(now = new Date()) {
   return lines.join('\n');
 }
 
-export async function sendDailyReport(chatId: string, now = new Date()) {
+export async function sendDailyReport(chatId: string, now = new Date(), topicId?: number) {
   if (!bot) return;
   await bot.api.sendMessage(chatId, await buildDailyReport(now), {
     parse_mode: 'HTML',
+    ...(topicId ? { message_thread_id: topicId } : {}),
     reply_markup: new InlineKeyboard().url('📈  Open dashboard', shopUrl('/admin')),
   });
 }

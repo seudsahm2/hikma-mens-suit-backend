@@ -222,13 +222,22 @@ authRouter.post(
         data: { resetCodeHash: sha(code), resetExpires: new Date(Date.now() + RESET_MINUTES * 60_000), resetTries: 0 },
       });
       const { bot } = await import('../telegram/bot');
-      await bot?.api
-        .sendMessage(
-          Number(user.staffTelegramId),
+      if (user.role === 'OWNER') {
+        const { ownerSend } = await import('../telegram/ownerChat');
+        await ownerSend(
+          user,
           `🔐 Your Hikma admin password reset code: <b>${code}</b>\n\nIt works for ${RESET_MINUTES} minutes. Didn’t ask for it? Ignore this — your password stays the same.`,
           { parse_mode: 'HTML' },
-        )
-        .catch(() => undefined);
+        );
+      } else {
+        await bot?.api
+          .sendMessage(
+            Number(user.staffTelegramId),
+            `🔐 Your Hikma admin password reset code: <b>${code}</b>\n\nIt works for ${RESET_MINUTES} minutes. Didn’t ask for it? Ignore this — your password stays the same.`,
+            { parse_mode: 'HTML' },
+          )
+          .catch(() => undefined);
+      }
     }
     res.json({ ok: true });
   }),
@@ -257,7 +266,14 @@ authRouter.post(
       data: { passwordHash: await bcrypt.hash(req.body.password, 12), resetCodeHash: null, resetExpires: null, resetTries: 0 },
     });
     const { bot } = await import('../telegram/bot');
-    if (updated.staffTelegramId) await bot?.api.sendMessage(Number(updated.staffTelegramId), '✅ Your Hikma admin password was changed.').catch(() => undefined);
+    if (updated.staffTelegramId) {
+      if (updated.role === 'OWNER') {
+        const { ownerSend } = await import('../telegram/ownerChat');
+        await ownerSend(updated, '✅ Your Hikma admin password was changed.');
+      } else {
+        await bot?.api.sendMessage(Number(updated.staffTelegramId), '✅ Your Hikma admin password was changed.').catch(() => undefined);
+      }
+    }
     res.json({ token: signToken({ sub: updated.id, role: updated.role }), user: publicUser(updated) });
   }),
 );
@@ -393,7 +409,7 @@ authRouter.delete(
   ah(async (req, res) => {
     const user = req.user!;
     if (user.role === 'CUSTOMER') throw unauthorized('Staff only');
-    await prisma.user.update({ where: { id: user.id }, data: { staffTelegramId: null, staffLinkCode: null } });
+    await prisma.user.update({ where: { id: user.id }, data: { staffTelegramId: null, staffLinkCode: null, staffTopicId: null } });
     res.json({ connected: false });
   }),
 );

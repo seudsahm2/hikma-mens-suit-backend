@@ -28,6 +28,7 @@ model User {
   telegramId       BigInt?   @unique
   staffTelegramId  BigInt?   @unique // owner/admin: their Telegram, for actions on the order cards
   staffLinkCode    String?   @unique
+  staffTopicId     Int?      // owner's "👔 Shop · Owner" topic in Telegram, so owner alerts stay separate from personal orders
   /// password reset by a code sent to staffTelegramId (sha256 of the code)
   resetCodeHash    String?
   resetExpires     DateTime?
@@ -575,6 +576,8 @@ model Settings {
   lastReportDate         String?
   /// One Telegram reminder to signed-in customers who leave items in their bag
   bagReminders           Boolean  @default(true)
+  /// Allow the shop owner to place customer orders using their own Telegram/account
+  ownerCanOrder          Boolean  @default(false)
   // Rewards — off until the owner turns them on (they cost money)
   /// Customers earn shop credit on received orders (percent of what they paid)
   loyaltyEnabled         Boolean  @default(false)

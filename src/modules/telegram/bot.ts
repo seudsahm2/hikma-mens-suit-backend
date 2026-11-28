@@ -67,8 +67,12 @@ if (bot) {
       const u = await prisma.user.findUnique({ where: { staffLinkCode: payload.slice(4) } });
       const issued = parseInt(payload.slice(4).split('-')[0] ?? '', 36);
       if (!u || u.role === 'CUSTOMER' || !(Date.now() - issued < 15 * 60_000)) return void (await ctx.reply('This link has expired. Open the admin and tap “Connect Telegram” again.'));
-      await prisma.user.updateMany({ where: { staffTelegramId: BigInt(ctx.from.id) }, data: { staffTelegramId: null } });
-      await prisma.user.update({ where: { id: u.id }, data: { staffTelegramId: BigInt(ctx.from.id), staffLinkCode: null } });
+      await prisma.user.updateMany({ where: { staffTelegramId: BigInt(ctx.from.id) }, data: { staffTelegramId: null, staffTopicId: null } });
+      await prisma.user.update({ where: { id: u.id }, data: { staffTelegramId: BigInt(ctx.from.id), staffLinkCode: null, staffTopicId: null } });
+      if (u.role === 'OWNER') {
+        const { ensureOwnerTopic } = await import('./ownerChat');
+        await ensureOwnerTopic({ id: u.id, staffTelegramId: BigInt(ctx.from.id), staffTopicId: null });
+      }
       return void (await ctx.reply(`✅ Connected — order card actions from this Telegram are now recorded as ${u.fullName}.`));
     }
     // Driver invite link from the admin: t.me/<bot>?start=drv_CODE
@@ -160,12 +164,18 @@ if (bot) {
     if (!ctx.from) return;
     const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
     const inAlertsChat = settings?.adminChatId === String(ctx.chat.id);
+    const tgId = BigInt(ctx.from.id);
     const staff = await prisma.user.findFirst({
-      where: { telegramId: BigInt(ctx.from.id), role: { in: ['OWNER', 'ADMIN'] }, isActive: true },
+      where: { isActive: true, role: { in: ['OWNER', 'ADMIN'] }, OR: [{ staffTelegramId: tgId }, { telegramId: tgId }] },
     });
     if (!inAlertsChat && !(ctx.chat.type === 'private' && staff)) return;
     const { sendDailyReport } = await import('../reports/dailyReport'); // lazy: avoids a circular import
-    await sendDailyReport(String(ctx.chat.id));
+    let topicId: number | undefined;
+    if (ctx.chat.type === 'private' && staff?.role === 'OWNER') {
+      const { ensureOwnerTopic } = await import('./ownerChat');
+      topicId = (await ensureOwnerTopic(staff)) ?? undefined;
+    }
+    await sendDailyReport(String(ctx.chat.id), undefined, topicId);
   });
 
   bot.command('link', async (ctx) => {
@@ -269,7 +279,7 @@ if (bot) {
     if (action === 'pick') {
       // Driver list, nearest first (free + online on top) — the staff member picks, or lets the bot choose
       const { rankedDrivers } = await import('../delivery/dispatch');
-      const list = await rankedDrivers();
+      const list = await rankedDrivers(orderId!);
       const kb = new InlineKeyboard().text('⚡ Nearest free driver (auto)', `od:${orderId}:auto`).row();
       for (const b of list.slice(0, 8)) {
         const dot = b.busy ? '🔴' : b.driver.isOnline ? '🟢' : '⚪';

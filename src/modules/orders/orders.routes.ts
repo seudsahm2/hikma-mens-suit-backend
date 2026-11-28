@@ -1,13 +1,15 @@
 import { Router } from 'express';
 import { limiter } from '../../middleware/rateLimit';
 import { z } from 'zod';
+import type { User } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
-import { ah, badRequest, notFound } from '../../lib/http';
+import { ah, badRequest, forbidden, notFound } from '../../lib/http';
 import { normalizeEthiopianPhone } from '../../lib/phone';
 import { saveImage } from '../../lib/storage';
 import { requireAuth } from '../../middleware/auth';
 import { imageUpload } from '../../middleware/upload';
 import { validate } from '../../middleware/validate';
+import { getSettings } from '../settings/settings.service';
 import { createOrder, orderInclude, serializeOrder, submitPayment } from './orders.service';
 
 export const ordersRouter = Router();
@@ -37,6 +39,20 @@ const createSchema = z.object({
   useCredit: z.boolean().default(false),
 });
 
+/** True if the signed-in buyer is the shop owner (either their OWNER row or a customer row sharing the owner's Telegram/phone). */
+async function isOwnerBuyer(user: User): Promise<boolean> {
+  if (user.role === 'OWNER') return true;
+  if (user.telegramId != null) {
+    const match = await prisma.user.findFirst({ where: { role: 'OWNER', isActive: true, staffTelegramId: user.telegramId }, select: { id: true } });
+    if (match) return true;
+  }
+  if (user.phone) {
+    const match = await prisma.user.findFirst({ where: { role: 'OWNER', isActive: true, phone: user.phone }, select: { id: true } });
+    if (match) return true;
+  }
+  return false;
+}
+
 ordersRouter.post(
   '/',
   orderLimiter,
@@ -45,6 +61,10 @@ ordersRouter.post(
     const body = req.body as z.infer<typeof createSchema>;
     const phone = normalizeEthiopianPhone(body.customerPhone);
     if (!phone) throw badRequest('Enter a valid Ethiopian phone number', 'PHONE');
+    const settings = await getSettings();
+    if (!settings.ownerCanOrder && (await isOwnerBuyer(req.user!))) {
+      throw forbidden('Owner ordering is turned off in Settings → Telegram');
+    }
     const order = await createOrder(req.user!, { ...body, customerPhone: phone });
     res.status(201).json({ order: serializeOrder(order) });
   }),

@@ -16,6 +16,7 @@ import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { getObject, IMAGE_SIZES, listObjects, removeObjects } from '../../lib/storage';
 import { bot } from '../telegram/bot';
+import { getOwnerTopicId } from '../telegram/ownerChat';
 import { encrypt, MIN_KEY_LENGTH, sha256 } from './crypto';
 import { createSnapshot } from './snapshot';
 
@@ -64,6 +65,7 @@ export async function runDbBackup(trigger: 'daily' | 'manual') {
     for (let i = 0; i < sealed.length; i += PART_BYTES) parts.push(sealed.subarray(i, i + PART_BYTES));
     const name = `hikma-db-${stamp(snap.createdAt)}`;
     const messages: string[] = [];
+    const topicId = await getOwnerTopicId(chat);
     for (const [i, part] of parts.entries()) {
       const file = parts.length > 1 ? `${name}.part${i + 1}of${parts.length}.hkb` : `${name}.hkb`;
       const caption = [
@@ -75,7 +77,11 @@ export async function runDbBackup(trigger: 'daily' | 'manual') {
       ]
         .filter(Boolean)
         .join('\n');
-      const msg = await bot!.api.sendDocument(chat, new InputFile(part, file), { caption, disable_notification: trigger === 'daily' });
+      const msg = await bot!.api.sendDocument(chat, new InputFile(part, file), {
+        caption,
+        disable_notification: trigger === 'daily',
+        ...(topicId ? { message_thread_id: topicId } : {}),
+      });
       messages.push(`${chat}:${msg.message_id}:${msg.document?.file_id ?? ''}`);
     }
     return await prisma.backupRun.update({
@@ -137,6 +143,7 @@ export async function runFileBackup(limit = 20, trigger: 'daily' | 'manual' = 'd
     const todo = [...[...images].map((p) => ({ path: p, kind: 'image' as const })), ...[...raw].map((p) => ({ path: p, kind: 'raw' as const }))]
       .filter((f) => !known.has(f.path))
       .slice(0, limit);
+    const topicId = await getOwnerTopicId(chat);
     let done = 0;
     for (const f of todo) {
       // Images: the largest size is kept; the smaller ones are rebuilt from it on restore
@@ -150,6 +157,7 @@ export async function runFileBackup(limit = 20, trigger: 'daily' | 'manual' = 'd
       const msg = await bot!.api.sendDocument(chat, new InputFile(sealed, `${f.path.replace(/\//g, '__')}.hkb`), {
         caption: `🖼 ${f.path}`,
         disable_notification: true,
+        ...(topicId ? { message_thread_id: topicId } : {}),
       });
       await prisma.backupFile.create({
         data: { path: f.path, kind: f.kind, size: body.length, sha256: sha256(body), chatId: chat, messageId: msg.message_id, fileId: msg.document!.file_id },
