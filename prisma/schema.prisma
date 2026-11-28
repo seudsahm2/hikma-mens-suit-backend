@@ -349,6 +349,8 @@ model Order {
   /// cancelled after money came in: when the shop gave it back (and how)
   refundedAt        DateTime?
   refundNote        String?
+  /// If this order is a replacement delivery for an ExchangeRequest
+  exchangeId        String?
   orderNumber       String            @unique
   userId            String?
   source            OrderSource       @default(WEB)
@@ -591,6 +593,12 @@ model Settings {
   creditMaxPercent       Int      @default(50)
   /// Customers can ask for a size exchange this many days after receiving an order
   exchangeDays           Int      @default(3)
+  /// Exchange re-delivery fee: free | fixed | percent
+  exchangeFeeType        String   @default("free")
+  exchangeFeeValue       Int      @default(0)
+  /// Default damage fee rule shown to trusted drivers: fixed | percent
+  damageFeeType          String   @default("fixed")
+  damageFeeValue         Int      @default(0)
   updatedAt              DateTime @updatedAt
 }
 
@@ -706,15 +714,23 @@ model ExchangeRequest {
   id        String   @id @default(cuid())
   orderId   String
   userId    String
-  /// [{ orderItemId, name, size, wantSize }]
-  items     Json
-  /// too_small | too_big | defect | other
-  reason    String
-  note      String?
+  /// [{ orderItemId, name, size, wantSize, wantVariantId?, reason? }]
+  items              Json
+  /// too_small | too_big | wrong_scent | damaged_bottle | wrong_item | defect | other
+  reason             String
+  note               String?
   /// requested | approved | declined | done
-  status    String   @default("requested")
-  staffNote String?
-  createdAt DateTime @default(now())
+  status             String   @default("requested")
+  staffNote          String?
+  replacementOrderId String?  @unique
+  deliveryFee        Int?
+  /// pending | returned_good | returned_damaged | restocked
+  returnStatus       String   @default("pending")
+  damagePhotoKey     String?
+  damageFee          Int      @default(0)
+  damagePaid         Boolean  @default(false)
+  damageNote         String?
+  createdAt          DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -759,6 +775,10 @@ model Driver {
   isActive        Boolean   @default(true)
   /// The order whose delivery code this driver is typing right now (in the bot chat)
   awaitingOrderId String?
+  /// The exchange order whose damage photo this driver is sending right now
+  awaitingPhotoOrderId String?
+  /// Owner-granted permission to set damage fee at the door using the shop's damage rate
+  canPriceDamage  Boolean   @default(false)
   /// Takes jobs only when online (/online, /offline in the bot)
   isOnline        Boolean   @default(false)
   /// Private-chat topic "🛵 Deliveries" (Telegram threaded mode) — keeps driver messages apart from shopping messages
